@@ -18,6 +18,7 @@ import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
+import { resolveRemoteAttach } from '../remoteAuth.js'
 
 import type {
   ComposerPasteResult,
@@ -378,7 +379,17 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         const attached = await gw
           .request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
           .catch((e: Error) => {
-            sys(`error: ${e.message}`)
+            // `image.attach` resolves the path on whichever machine runs the gateway. Attached
+            // to a remote serve that is not this laptop, so a local path that fails here fails
+            // for a reason the bare error does not explain. (Clipboard images are unaffected:
+            // they travel as bytes.)
+            const remote = resolveRemoteAttach()
+
+            sys(
+              remote
+                ? `error: ${e.message} — remote: paths resolve on ${remote.name}, not this machine; paste the image instead`
+                : `error: ${e.message}`
+            )
 
             return null
           })
