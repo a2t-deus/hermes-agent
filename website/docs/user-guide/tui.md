@@ -289,9 +289,64 @@ By default the TUI spawns its own in-process gateway, so each TUI instance is se
 
 You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
+This is not a general "point any TUI at any port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404. To attach to another machine's `hermes serve`, see [Connect to a remote serve](#connect-to-a-remote-serve).
 
-If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
+Setting `HERMES_TUI_GATEWAY_URL` by hand is still not a supported way to reach another machine: it carries no credential a gated serve accepts. To attach a TUI to another host, use `--connect` (below), which mints the right credential for you.
+
+## Connect to a remote serve
+
+`hermes --connect <name>` runs the TUI as a **thin client of a remote `hermes serve`** instead of spawning a local gateway. The agent, its tools, and its sessions all live on the remote host; your terminal is just another view onto them — alongside the Desktop app and the iOS app.
+
+Because an attached client claims no session lease, this is also how you get a second view of a session that is already open somewhere else without a `SESSION_NOT_OWNED` conflict.
+
+### Configure your hosts
+
+Each `hermes serve` has its own session store, so each one is a separate target. Add them under `remote_gateways` in `~/.hermes/config.yaml`:
+
+```yaml
+remote_gateways:
+  mini:
+    url: http://100.119.193.95:9129
+    username: sagi
+  laptop:
+    url: http://100.119.198.94:9129
+    username: sagi
+```
+
+Only the URL and username go in the config — **never a password or token**. A full URL also works without any config entry:
+
+```bash
+hermes --connect http://100.119.193.95:9129
+```
+
+### Sign in
+
+The first `--connect` to a host prompts for your password, exchanges it for the serve's session cookies, and stores **only those cookies** in `~/.hermes/remote/<name>/cookies.json` (mode `0600`). The password is never written to disk and never appears in the process list.
+
+```bash
+hermes --connect mini            # reuses the stored session
+hermes --connect mini --login    # forces a fresh sign-in
+```
+
+Sessions are refreshed automatically. When one can no longer be refreshed, the TUI exits with code `41` and tells you to re-run with `--login`.
+
+For non-interactive use (CI, scripts) set `HERMES_REMOTE_PASSWORD`; there is deliberately no password flag, because arguments are visible to every process on the machine.
+
+### What differs from a local TUI
+
+| | Local | `--connect` |
+|---|---|---|
+| Agent + tools run on | this machine | the remote host |
+| Sessions come from | local `~/.hermes/state.db` | that host's store |
+| Working directory | your shell's cwd | the **server's** cwd |
+| `/update` | updates this machine | no-op — run `hermes update` on that host |
+| Image by path | local path | resolves **on the server**; paste the image instead |
+
+Each `--connect` targets exactly one serve and sees only that host's sessions. Sessions are never merged across hosts — `--connect mini` and `--connect laptop` are two separate worlds.
+
+### Requirements
+
+The remote `hermes serve` must have authentication configured (a password provider). A loopback-only serve with no auth does not accept remote clients at all, by design.
 
 ## Reverting to the classic CLI
 
