@@ -45,6 +45,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { REMOTE_AUTH_EXIT_CODE } from '../remoteAuth.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -960,8 +961,21 @@ export function useMainApp(gw: GatewayClient) {
       }
     }
 
-    const exitHandler = (code: null | number) => {
+    const exitHandler = (code?: null | number) => {
       turnController.reset()
+
+      // Remote attach with a dead cookie set: retrying re-mints against the same rejected
+      // session, so recovery would spin until planGatewayRecovery gives up while showing the
+      // user nothing they can act on. Surface the instruction and exit non-zero instead.
+      if (code === REMOTE_AUTH_EXIT_CODE) {
+        const remoteName = process.env.HERMES_TUI_REMOTE_NAME?.trim() || 'the remote serve'
+
+        patchUiState({ busy: false, compacting: false, sid: null, status: 'remote session expired' })
+        sys(`error: remote session expired — run \`hermes --connect ${remoteName} --login\` to sign in again`)
+        dieWithCode(REMOTE_AUTH_EXIT_CODE)
+
+        return
+      }
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child

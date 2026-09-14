@@ -18,6 +18,15 @@ import { WebSocket as UndiciWebSocket } from 'undici'
 import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import {
+  mintWsTicket,
+  REMOTE_AUTH_EXIT_CODE,
+  type RemoteAttachConfig,
+  RemoteAuthExpiredError,
+  remoteGatewayWsUrl,
+  resolveRemoteAttach,
+  ticketSubprotocols
+} from './remoteAuth.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -127,6 +136,7 @@ export class GatewayClient extends EventEmitter {
   private sidecarWs: WebSocket | null = null
   private attachUrl: null | string = null
   private sidecarUrl: null | string = null
+  private remote: RemoteAttachConfig | null = null
   private logs = new CircularBuffer<string>(MAX_GATEWAY_LOG_LINES)
   // Request ids, pending map, timeouts, error mapping and the gateway.ping
   // heartbeat are shared with the desktop/web WebSocket client; this class
@@ -303,6 +313,9 @@ export class GatewayClient extends EventEmitter {
   }
 
   private startReadyTimer(python: string, cwd: string) {
+    // Remote attach arms this before minting a ticket and `startAttachedGateway` arms it again
+    // once the socket exists; clearing first keeps that a re-arm rather than a leaked timer.
+    this.clearReadyTimer()
     this.readyTimer = setTimeout(() => {
       if (this.ready) {
         return
@@ -503,7 +516,12 @@ export class GatewayClient extends EventEmitter {
     })
   }
 
-  private startAttachedGateway(attachUrl: string) {
+  /**
+   * Returns the promise that settles when the socket opens, or null when no socket was created.
+   * Remote attach awaits the return value rather than re-reading `this.wsConnectPromise`: on a
+   * bail path that field still holds the CALLER's own promise, and awaiting it would hang.
+   */
+  private startAttachedGateway(attachUrl: string, protocols?: string[]): Promise<void> | null {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
@@ -516,11 +534,13 @@ export class GatewayClient extends EventEmitter {
       this.publish({ type: 'gateway.stderr', payload: { line } })
       this.handleTransportExit(1, 'gateway websocket unavailable')
 
-      return
+      return null
     }
 
     try {
-      const ws = new WebSocketCtor(attachUrl)
+      // `protocols` carries the single-use WS ticket in remote-attach mode. It is a credential:
+      // never log it, and never let it reach the URL (redactUrl only scrubs the query string).
+      const ws = protocols ? new WebSocketCtor(attachUrl, protocols) : new WebSocketCtor(attachUrl)
       let settled = false
 
       this.ws = ws
@@ -601,10 +621,64 @@ export class GatewayClient extends EventEmitter {
         this.pushLog(line)
         this.publish({ type: 'gateway.stderr', payload: { line } })
       })
+
+      return connectPromise
     } catch (err) {
       this.pushLog(`[startup] failed to connect websocket gateway ${safeAttachUrl} (constructor error)`)
       this.handleTransportExit(1, 'gateway websocket startup failed')
+
+      return null
     }
+  }
+
+  /**
+   * Remote attach: mint a fresh single-use ticket, then dial. Every call mints its own — this
+   * is also the reconnect path (`scheduleReconnect` -> `start()`), and a 30s ticket cannot
+   * survive a backoff that reaches 30s.
+   *
+   * `wsConnectPromise` is installed synchronously and spans the mint as well as the open, so an
+   * RPC issued while the ticket is still in flight waits instead of seeing a null socket. The
+   * channel is bound inside `startAttachedGateway` once the socket exists, as in attach mode.
+   */
+  private startRemoteGateway(remote: RemoteAttachConfig) {
+    const wsUrl = remoteGatewayWsUrl(remote.baseUrl)
+
+    this.lifecycle(`[lifecycle] attaching to remote serve ${remote.name} (${wsUrl})`)
+    this.startReadyTimer('websocket', wsUrl)
+
+    const connect = (async () => {
+      const ticket = await mintWsTicket(remote)
+      const opened = this.startAttachedGateway(wsUrl, ticketSubprotocols(ticket))
+
+      if (opened) {
+        await opened
+      }
+    })()
+
+    connect.catch((err: unknown) => this.handleRemoteConnectFailure(err))
+    this.wsConnectPromise = connect
+  }
+
+  /**
+   * A rejected cookie set never recovers by retrying, so `disposed` is set before the exit —
+   * that makes `scheduleReconnect` a no-op and the TUI exits non-zero with an actionable
+   * message instead of looping on backoff behind a login prompt it cannot show.
+   */
+  private handleRemoteConnectFailure(err: unknown) {
+    const expired = err instanceof RemoteAuthExpiredError
+    const line = `[remote] ${err instanceof Error ? err.message : String(err)}`
+
+    this.pushLog(line)
+    this.publish({ type: 'gateway.stderr', payload: { line } })
+
+    if (expired) {
+      this.disposed = true
+      this.handleTransportExit(REMOTE_AUTH_EXIT_CODE, 'remote session expired')
+
+      return
+    }
+
+    this.handleTransportExit(1, 'remote gateway connect failed')
   }
 
   start() {
@@ -612,9 +686,13 @@ export class GatewayClient extends EventEmitter {
     this.clearReconnect()
 
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
-    const attachUrl = resolveGatewayAttachUrl()
+    const remote = resolveRemoteAttach()
+    // Remote mode has no credential-bearing URL to hand around: `attachUrl` is the bare
+    // ws:// origin so `ensureAttachedWebSocket` and `request()` still classify this as attach.
+    const attachUrl = remote ? remoteGatewayWsUrl(remote.baseUrl) : resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
 
+    this.remote = remote
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
@@ -628,6 +706,12 @@ export class GatewayClient extends EventEmitter {
     this.proc = null
     this.closeGatewaySocket()
     this.closeSidecarSocket()
+
+    if (remote) {
+      this.startRemoteGateway(remote)
+
+      return
+    }
 
     if (attachUrl) {
       this.startAttachedGateway(attachUrl)
@@ -714,11 +798,20 @@ export class GatewayClient extends EventEmitter {
       throw new Error('gateway not running')
     }
 
-    if (!this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING) {
+    // `!this.wsConnectPromise` keeps this from restarting a connect that is already in flight.
+    // In remote attach the socket does not exist until the ticket mint returns, so without the
+    // guard the first RPC would re-enter start(), burn a second ticket, and orphan the first
+    // dial. A real drop clears the promise in the close handler, so recovery still works.
+    const connecting = this.wsConnectPromise !== null
+    const dead = !this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING
+
+    if (dead && !connecting) {
       this.start()
     }
 
-    if (this.ws?.readyState === WS_CONNECTING) {
+    // `!this.ws` also covers remote attach, where the socket does not exist yet while the WS
+    // ticket is still being minted; `wsConnectPromise` spans that window too.
+    if (!this.ws || this.ws.readyState === WS_CONNECTING) {
       try {
         await this.wsConnectPromise
       } catch (err) {
@@ -736,7 +829,8 @@ export class GatewayClient extends EventEmitter {
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
   request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
-    const attachUrl = resolveGatewayAttachUrl()
+    const remote = resolveRemoteAttach()
+    const attachUrl = remote ? remoteGatewayWsUrl(remote.baseUrl) : resolveGatewayAttachUrl()
 
     if (attachUrl) {
       if (this.attachUrl !== attachUrl) {

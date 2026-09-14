@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface ListenerEntry {
@@ -16,10 +20,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
     readyState = FakeWebSocket.CONNECTING
     sent: string[] = []
     readonly url: string
+    // Remote attach carries the single-use WS ticket here rather than in the URL.
+    readonly protocols: string[]
     private listeners = new Map<string, ListenerEntry[]>()
 
-    constructor(url: string) {
+    constructor(url: string, protocols?: string[] | string) {
       this.url = url
+      this.protocols = protocols === undefined ? [] : Array.isArray(protocols) ? protocols : [protocols]
       FakeWebSocket.instances.push(this)
     }
 
@@ -104,6 +111,7 @@ import {
   WS_HEARTBEAT_DEAD_MS,
   WS_HEARTBEAT_INTERVAL_MS
 } from '../gatewayClient.js'
+import { REMOTE_AUTH_EXIT_CODE } from '../remoteAuth.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -667,5 +675,153 @@ describe('GatewayClient websocket attach mode', () => {
     await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + RECONNECT_MAX_MS + 1000)
     expect(FakeWebSocket.instances.length).toBe(1) // no reconnect attempted
     vi.useRealTimers()
+  })
+})
+
+describe('GatewayClient remote attach mode', () => {
+  const originalWebSocket = globalThis.WebSocket
+  const originalFetch = globalThis.fetch
+  const saved: Record<string, string | undefined> = {}
+  const REMOTE_ENV = ['HERMES_TUI_REMOTE_URL', 'HERMES_TUI_REMOTE_COOKIE_FILE', 'HERMES_TUI_REMOTE_NAME']
+  let cookieFile: string
+  let tmpDir: string
+
+  // Each dial mints its own ticket; the sequence lets a test tell dial N's ticket from dial N+1's.
+  let minted: string[]
+  let mintStatus: number
+
+  const primeRemoteEnv = () => {
+    process.env.HERMES_TUI_REMOTE_URL = 'http://remote.test:9129'
+    process.env.HERMES_TUI_REMOTE_COOKIE_FILE = cookieFile
+    process.env.HERMES_TUI_REMOTE_NAME = 'mini'
+  }
+
+  beforeEach(() => {
+    for (const key of [...REMOTE_ENV, 'HERMES_TUI_GATEWAY_URL', 'HERMES_TUI_SIDECAR_URL']) {
+      saved[key] = process.env[key]
+      delete process.env[key]
+    }
+
+    tmpDir = mkdtempSync(join(tmpdir(), 'hermes-remote-'))
+    cookieFile = join(tmpDir, 'cookies.json')
+    writeFileSync(cookieFile, JSON.stringify({ cookies: { hermes_session_at: 'at-1' }, version: 1 }))
+
+    minted = []
+    mintStatus = 200
+    globalThis.fetch = vi.fn(async () => {
+      const ticket = `ticket-${minted.length + 1}`
+
+      minted.push(ticket)
+
+      return new Response(mintStatus === 200 ? JSON.stringify({ ticket, ttl_seconds: 30 }) : '{}', {
+        headers: { 'content-type': 'application/json' },
+        status: mintStatus
+      })
+    }) as unknown as typeof fetch
+
+    FakeWebSocket.reset()
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    for (const key of [...REMOTE_ENV, 'HERMES_TUI_GATEWAY_URL', 'HERMES_TUI_SIDECAR_URL']) {
+      if (saved[key] === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = saved[key]
+      }
+    }
+
+    rmSync(tmpDir, { force: true, recursive: true })
+    FakeWebSocket.reset()
+    globalThis.fetch = originalFetch
+
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket
+    } else {
+      delete (globalThis as { WebSocket?: unknown }).WebSocket
+    }
+  })
+
+  it('mints a ws ticket BEFORE dialing and carries it in the subprotocol, never the URL', async () => {
+    primeRemoteEnv()
+    const gw = new GatewayClient()
+
+    gw.start()
+
+    // The dial is gated on the mint, so no socket exists until the HTTP round trip lands.
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+
+    const socket = FakeWebSocket.instances[0]!
+
+    expect(minted).toEqual(['ticket-1'])
+    expect(socket.url).toBe('ws://remote.test:9129/api/ws')
+    // A ticket in the query string would land in proxy and server logs.
+    expect(socket.url).not.toContain('ticket')
+    expect(socket.protocols).toEqual(['hermes-gateway-v1', 'hermes-gateway-ticket.ticket-1'])
+
+    gw.kill()
+  })
+
+  it('mints a FRESH ticket on every reconnect (a 30s ticket cannot survive backoff)', async () => {
+    primeRemoteEnv()
+    const gw = new GatewayClient()
+
+    gw.start()
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    FakeWebSocket.instances[0]!.open()
+    gw.drain()
+    await Promise.resolve()
+
+    FakeWebSocket.instances[0]!.close(1006)
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 5000 })
+
+    expect(minted).toEqual(['ticket-1', 'ticket-2'])
+    expect(FakeWebSocket.instances[1]!.protocols).toEqual([
+      'hermes-gateway-v1',
+      'hermes-gateway-ticket.ticket-2'
+    ])
+
+    gw.kill()
+  })
+
+  it('exits 41 without reconnecting when the stored session is rejected', async () => {
+    primeRemoteEnv()
+    mintStatus = 401
+    const gw = new GatewayClient()
+    const exits: (null | number)[] = []
+
+    gw.on('exit', code => exits.push(code))
+    // start() bumps the drain generation, so subscribe AFTER it or the buffered exit never flushes.
+    gw.start()
+    gw.drain()
+
+    await vi.waitFor(() => expect(exits).toEqual([REMOTE_AUTH_EXIT_CODE]))
+    // A rejected cookie set never recovers by retrying, so nothing is dialed and no
+    // reconnect is scheduled.
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(gw.getLogTail(20)).toContain('hermes --connect mini --login')
+
+    gw.kill()
+  })
+
+  it('surfaces an expired session as an actionable instruction, not a bare HTTP code', async () => {
+    primeRemoteEnv()
+    writeFileSync(cookieFile, JSON.stringify({ cookies: {}, version: 1 }))
+    const gw = new GatewayClient()
+    const exits: (null | number)[] = []
+
+    gw.on('exit', code => exits.push(code))
+    // start() bumps the drain generation, so subscribe AFTER it or the buffered exit never flushes.
+    gw.start()
+    gw.drain()
+
+    await vi.waitFor(() => expect(exits).toEqual([REMOTE_AUTH_EXIT_CODE]))
+    // An empty jar short-circuits before any network call.
+    expect(minted).toEqual([])
+
+    gw.kill()
   })
 })
