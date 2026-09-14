@@ -697,6 +697,41 @@ def _apply_tui_python_env(env: dict) -> None:
         env["HERMES_PYTHON"] = sys.executable
 
 
+#: Mirrors ``REMOTE_AUTH_EXIT_CODE`` in ``ui-tui/src/remoteAuth.ts`` — the TUI exits with this
+#: when the remote serve rejects the stored cookie set. Distinct from 42 (update-relaunch).
+REMOTE_AUTH_EXIT_CODE = 41
+
+
+def _configure_remote_attach(env: dict, connect: str, *, force_login: bool):
+    """Sign in to the remote serve and put the attach contract in the TUI child's env.
+
+    Returns the resolved :class:`~hermes_cli.remote_attach.RemoteTarget`, or exits non-zero with
+    an actionable message. Only the cookie file's *path* crosses into the child — never the
+    cookie values and never the password — so ``ps`` on a shared box shows nothing usable, and
+    the child can persist rotated cookies back to the same file.
+    """
+    from hermes_cli.remote_attach import RemoteAttachError, ensure_session, resolve_target
+    try:
+        target = resolve_target(connect)
+        cookie_file = ensure_session(target, force_login=force_login)
+    except RemoteAttachError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    except KeyboardInterrupt:
+        print("\nSign-in cancelled.", file=sys.stderr)
+        raise SystemExit(130) from None
+
+    env["HERMES_TUI_REMOTE_URL"] = target.base_url
+    env["HERMES_TUI_REMOTE_COOKIE_FILE"] = str(cookie_file)
+    env["HERMES_TUI_REMOTE_NAME"] = target.name
+    # Attach mode dials the remote /api/ws itself (minting a ticket per dial). A stale local
+    # attach/sidecar URL inherited from the environment would otherwise win in gatewayClient.
+    for stale in ("HERMES_TUI_GATEWAY_URL", "HERMES_TUI_SIDECAR_URL"):
+        env.pop(stale, None)
+    print(f"⚕ Attaching to {target.name} ({target.base_url})")
+    return target
+
+
 def _setup_tui_worktree() -> dict:
     """Create the ``--worktree`` checkout for a TUI launch (prune + async pack maintenance); exits on failure."""
     wt_info = None
@@ -724,8 +759,14 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
-    """Replace current process with the TUI."""
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    connect: Optional[str] = None, login: bool = False):
+    """Replace current process with the TUI.
+
+    With ``connect`` the TUI runs as a thin client of a remote ``hermes serve``: no local
+    gateway child, so no session lease is claimed and the remote's sessions are shared rather
+    than contended (see :mod:`hermes_cli.remote_attach`).
+    """
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -734,12 +775,16 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-    from hermes_cli.shared_session_attach import configure_tui_attachment
-    try:
-        configure_tui_attachment(env, resume_session_id)
-    except (ValueError, RuntimeError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        raise SystemExit(1) from None
+    remote_target = _configure_remote_attach(env, connect, force_login=login) if connect else None
+    if remote_target is None:
+        # Local-runtime discovery only makes sense when we own a gateway child; in attach mode
+        # the remote serve already holds the lease and this would contend for a local one.
+        from hermes_cli.shared_session_attach import configure_tui_attachment
+        try:
+            configure_tui_attachment(env, resume_session_id)
+        except (ValueError, RuntimeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -757,7 +802,10 @@ def _launch_tui(
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
 
-    _apply_tui_python_env(env)
+    if remote_target is None:
+        # Resolving a local interpreter/src-root is spawn-path prep: attach mode never starts a
+        # gateway child, so an unresolvable local Python must not block the launch.
+        _apply_tui_python_env(env)
 
     skills_value = ""
     if skills:
@@ -801,7 +849,10 @@ def _launch_tui(
         except KeyboardInterrupt:
             code = 130
 
-        if code in {0, 130}:
+        # The epilogue reads the LOCAL session store. In attach mode the conversation lives in
+        # the remote serve's store, so this would either find nothing or, worse, print resume
+        # details for an unrelated local session.
+        if code in {0, 130} and remote_target is None:
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
         with contextlib.suppress(OSError):
@@ -811,9 +862,24 @@ def _launch_tui(
                 from cli import _cleanup_worktree
                 _cleanup_worktree(wt_info)
 
+    # Exit code 41 = remote session expired. The TUI already printed what to run; the launcher
+    # must not treat it as a crash or try to recover.
+    if code == REMOTE_AUTH_EXIT_CODE and remote_target is not None:
+        print(
+            f"\n✗ Remote session expired. Run `hermes --connect {remote_target.name} --login` "
+            "to sign in again.\n", file=sys.stderr)
+        sys.exit(code)
+
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.
+    # In attach mode the agent runs on the *remote* host, so updating this machine's install
+    # would not touch what the user is actually talking to — the request is a no-op here.
     if code == 42:
+        if remote_target is not None:
+            print(
+                f"\n⚕ Update requested, but this TUI is attached to {remote_target.name}. "
+                f"Run `hermes update` on that host instead.\n")
+            sys.exit(0)
         from hermes_cli.relaunch import relaunch
         print("\n☤ Launching update...\n")
         relaunch(["update"], preserve_inherited=False)
@@ -857,6 +923,9 @@ def _resolve_use_tui(args) -> bool:
     if getattr(args, "cli", False):
         return False
     if getattr(args, "tui", False):
+        return True
+    # --connect is TUI-only: the remote-attach transport lives in the Ink client.
+    if getattr(args, "connect", None):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):

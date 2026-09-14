@@ -174,6 +174,12 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
+    inherited(parser, "--connect", default=None, metavar="NAME|URL",
+              help="Attach the TUI to a remote `hermes serve` as a thin client instead of "
+                   "spawning a local gateway. NAME resolves via remote_gateways in config; a "
+                   "full http(s):// origin also works. Implies --tui.")
+    inherited(parser, "--login", action="store_true", default=False,
+              help="With --connect: force a fresh sign-in instead of reusing the stored session")
 
 
 def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
@@ -274,6 +280,12 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
+    inherited(chat_parser, "--connect", default=SUPPRESS, metavar="NAME|URL",
+              help="Attach the TUI to a remote `hermes serve` as a thin client instead of "
+                   "spawning a local gateway. NAME resolves via remote_gateways in config; a "
+                   "full http(s):// origin also works. Implies --tui.")
+    inherited(chat_parser, "--login", action="store_true", default=SUPPRESS,
+              help="With --connect: force a fresh sign-in instead of reusing the stored session")
     return chat_parser
 
 
