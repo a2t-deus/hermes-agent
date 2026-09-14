@@ -264,7 +264,11 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
         argv = sys.argv[1:]
     if "--cli" in argv:
         return False
+    # --connect only has a TUI implementation (it replaces the local gateway child with a
+    # WebSocket to a remote serve), so it implies --tui the same way an explicit flag does.
     if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+        return True
+    if any(a == "--connect" or a.startswith("--connect=") for a in argv):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -1761,6 +1765,8 @@ def cmd_chat(args):
             tui_dev=getattr(args, "tui_dev", False),
             model=getattr(args, "model", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            connect=getattr(args, "connect", None),
+            login=getattr(args, "login", False),
             **passthrough,
         )
 
