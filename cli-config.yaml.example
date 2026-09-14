@@ -1684,6 +1684,32 @@ delegation:
 # honcho: {}
 
 # =============================================================================
+# Remote gateways  (`hermes --connect <name>`)
+# =============================================================================
+# Run the terminal TUI as a thin client of a remote `hermes serve` instead of
+# spawning a local gateway. The agent, its tools and its sessions all live on
+# the remote host; the TUI is just another view onto them, alongside the Desktop
+# and iOS apps. An attached client takes no session lease, so several clients
+# can watch one session without a SESSION_NOT_OWNED conflict.
+#
+# Each serve has its OWN session store, so each entry is a separate world:
+# `--connect mini` never sees `--connect laptop`'s sessions.
+#
+# SECURITY: url + username ONLY. Never put a password or token here. The first
+# `--connect` prompts for the password, exchanges it for the serve's session
+# cookies, and stores only those in ~/.hermes/remote/<name>/cookies.json (0600).
+# Re-authenticate with `hermes --connect <name> --login`.
+#
+# The remote serve must have authentication configured (a password provider).
+# remote_gateways:
+#   mini:
+#     url: http://100.119.193.95:9129
+#     username: sagi
+#   laptop:
+#     url: http://100.119.198.94:9129
+#     username: sagi
+
+# =============================================================================
 # Display
 # =============================================================================
 display:
