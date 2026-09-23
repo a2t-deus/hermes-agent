@@ -1600,12 +1600,21 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
-# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
-# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
-# the full account catalog; other out-of-sequence values return an empty catalog and omitting
-# the parameter is HTTP 400.
+# hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
+# returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
+# legacy list (astra + the 5.6 trio) while any version at or above the newest
+# ``minimal_client_version`` (0.155.0, 99.0.0 alike, live 2026-09-23) returns everything the
+# account is entitled to (upstream #119412). Ask as the newest possible client first; keep "0.0.0"
+# as the fallback for the day the backend rejects out-of-sequence versions again (omitting the
+# parameter is HTTP 400).
 CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
-CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
+CODEX_NEWEST_CLIENT_VERSION = "99.0.0"
+CODEX_MODELS_CATALOG_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
+CODEX_MODELS_CATALOG_URLS = tuple(
+    f"{CODEX_MODELS_CATALOG_ENDPOINT}?client_version={v}"
+    for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
+)
+CODEX_MODELS_CATALOG_URL = CODEX_MODELS_CATALOG_URLS[0]
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:

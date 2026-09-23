@@ -271,10 +271,11 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
 
-def test_catalog_requests_use_ungated_client_version(monkeypatch):
-    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
-    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
-    made-up version silently drops future models."""
+def test_catalog_requests_ask_as_newest_client_then_fall_back_to_ungated(monkeypatch):
+    """The endpoint hides models whose ``minimal_client_version`` is newer than ``client_version``
+    and the old ``0.0.0`` sentinel now returns a frozen legacy list (no GPT-6 Sol/Luna). Both
+    catalog request sites ask as the newest possible client (``99.0.0``); the picker fetch falls
+    back to ``0.0.0`` only when that returns an empty catalog."""
     import sys
     from urllib.parse import parse_qs, urlparse
 
@@ -283,33 +284,56 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
 
     seen_urls = []
 
-    class _FakeResp:
+    def _client_version(url):
+        parsed = urlparse(url)
+        assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
+        return parse_qs(parsed.query)["client_version"][0]
+
+    class _EmptyResp:
         status_code = 200
 
         def json(self):
             return {"models": []}
 
-    class _FakeHttpx:
+    class _FullResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": [{"slug": "gpt-6-sol", "priority": 1, "visibility": "list"}]}
+
+    class _FakeHttpxEmpty:
         @staticmethod
         def get(url, headers=None, timeout=None):
             seen_urls.append(url)
-            return _FakeResp()
+            return _EmptyResp()
+
+    class _FakeHttpxFull:
+        @staticmethod
+        def get(url, headers=None, timeout=None):
+            seen_urls.append(url)
+            return _FullResp()
 
     class _FakeRequests:
         @staticmethod
         def get(url, headers=None, timeout=None, verify=None):
             seen_urls.append(url)
-            return _FakeResp()
+            return _EmptyResp()
 
-    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+    # Newest client returns models -> single request, no fallback.
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpxFull)
+    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token="tok")
+    assert [_client_version(u) for u in seen_urls] == ["99.0.0"]
+
+    # Newest client returns an empty catalog -> fall back to the 0.0.0 sentinel once.
+    seen_urls.clear()
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpxEmpty)
     codex_models._fetch_models_from_api(access_token="tok")
+    assert [_client_version(u) for u in seen_urls] == ["99.0.0", "0.0.0"]
+
+    # Context-length fetch asks as the newest client.
+    seen_urls.clear()
     monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
     monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
     model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
-
-    assert len(seen_urls) == 2
-    for url in seen_urls:
-        parsed = urlparse(url)
-        assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
-        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]
+    assert [_client_version(u) for u in seen_urls] == ["99.0.0"]

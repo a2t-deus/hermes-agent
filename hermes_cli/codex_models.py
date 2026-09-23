@@ -155,12 +155,18 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         acct_id = _extract_chatgpt_account_id(access_token)
         if acct_id:
             headers["ChatGPT-Account-Id"] = acct_id
-        from agent.model_metadata import CODEX_MODELS_CATALOG_URL
-        resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        entries = data.get("models", []) if isinstance(data, dict) else []
+        from agent.model_metadata import CODEX_MODELS_CATALOG_URLS
+        entries: list = []
+        for url in CODEX_MODELS_CATALOG_URLS:
+            resp = httpx.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            entries = data.get("models", []) if isinstance(data, dict) else []
+            # Newest-client ask returns the full entitlement; the "0.0.0" fallback covers a
+            # backend that rejects out-of-sequence versions with an empty catalog.
+            if entries:
+                break
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
