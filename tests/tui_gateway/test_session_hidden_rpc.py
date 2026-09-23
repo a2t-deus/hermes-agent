@@ -69,3 +69,18 @@ def test_session_list_include_hidden(db):
 
     all_rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
     assert {s["id"] for s in all_rows} == {"plain-chat", "bot-chat"}
+
+
+def test_session_list_rows_carry_serve_owned_state(db):
+    """Clients derive pin/hide/archive + ordering from the serve, so rows carry that state."""
+    _seed(db, "pinned-chat")
+    _seed(db, "bot-chat")
+    assert db.set_session_pinned("pinned-chat", True) is True
+    assert db.set_session_hidden("bot-chat", True) is True
+
+    rows = {s["id"]: s for s in _call("session.list", {"include_hidden": True})["result"]["sessions"]}
+    assert rows["pinned-chat"]["pinned"] is True and rows["pinned-chat"]["hidden"] is False
+    assert rows["bot-chat"]["hidden"] is True and rows["bot-chat"]["pinned"] is False
+    for row in rows.values():
+        assert row["archived"] is False
+        assert isinstance(row["last_active"], (int, float)) and row["last_active"] > 0

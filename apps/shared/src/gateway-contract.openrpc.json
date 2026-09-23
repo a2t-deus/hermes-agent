@@ -25931,6 +25931,26 @@
             "default": "",
             "title": "Source",
             "type": "string"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "archived": {
+            "default": false,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "last_active": {
+            "default": 0,
+            "title": "Last Active",
+            "type": "number"
           }
         },
         "required": [

@@ -198,6 +198,10 @@ class SessionListRow(Result):
     started_at: float = 0
     message_count: int = 0
     source: str = ""
+    pinned: bool = False
+    hidden: bool = False
+    archived: bool = False
+    last_active: float = 0  # latest activity (``list_sessions_rich``); 0 when unknown
 
 
 class SessionListResult(Result):
