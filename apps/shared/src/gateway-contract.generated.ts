@@ -2603,6 +2603,10 @@ export interface SessionListRow {
   started_at?: number
   message_count?: number
   source?: string
+  pinned?: boolean
+  hidden?: boolean
+  archived?: boolean
+  last_active?: number
 }
 export interface SessionMostRecentParams {
   profile?: string | null
