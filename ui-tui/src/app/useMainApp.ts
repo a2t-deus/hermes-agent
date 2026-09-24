@@ -1046,7 +1046,7 @@ export function useMainApp(gw: GatewayClient) {
       if (!gaveUpRef.current) {
         gaveUpRef.current = true
         turnController.pushActivity(backendGaveUpActivity(), 'error')
-        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)))}`)
+        sys(`error: ${backendGaveUp(code ?? null, lastStderrLine(gw.getLogTail(20)))}`)
       }
     }
 
