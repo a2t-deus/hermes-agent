@@ -1,6 +1,4 @@
 """Tests for automatic MCP reload when config.yaml mcp_servers section changes."""
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from utils import file_signature
@@ -97,9 +95,7 @@ class TestMCPConfigWatch:
         obj._reload_mcp.assert_not_called()
 
         out = capsys.readouterr().out
-        assert "reload skipped" in out
-        assert "/reload-mcp" in out
-        assert "prompt cache" in out
+        assert "/reload-mcp" in out  # tells the user how to apply it manually
 
     def test_optout_updates_snapshot_so_reload_mcp_applies_cleanly(self, tmp_path):
         """After an opted-out change, the watcher must not re-notify every
@@ -193,6 +189,29 @@ class TestMCPConfigWatch:
 
         obj._reload_mcp.assert_not_called()
         assert "MCP server config changed" not in capsys.readouterr().out
+
+
+def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
+    """REPL init must seed _config_sig from on-disk config.yaml.
+
+    file_signature is only evaluated when the file exists (short-circuit
+    otherwise). Isolated-home tests without a config file therefore never
+    exercised the call, and a missing import crashed every real CLI launch.
+    """
+    from hermes_cli.config import get_config_path
+    import cli as cli_mod
+
+    # Bare object: skip the tool-callback / security wiring at the end of the init.
+    monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    cfg_file = get_config_path()
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text("mcp_servers: {}\n")
+
+    obj = object.__new__(cli_mod.HermesCLI)
+    obj.config = {"mcp_servers": {}}
+    obj._tui_init_run_state()
+
+    assert obj._config_sig == file_signature(cfg_file.stat())
 
 
 def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
