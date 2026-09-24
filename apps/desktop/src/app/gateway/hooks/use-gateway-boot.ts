@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { mirrorActiveConnectionRoute } from '@/app/gateway/active-connection-route'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
@@ -228,16 +229,9 @@ export function useGatewayBoot({
       }
 
       callbacksRef.current.onConnectionReady(next)
+      // Main's per-window route follows via mirrorActiveConnectionRoute below,
+      // which also covers store-driven publications that bypass publish().
       setConnection(next)
-      desktop?.setActiveConnectionRoute?.(
-        next
-          ? {
-              connectionId: next.connectionId ?? null,
-              profile: next.profile,
-              registryScoped: next.registryScoped === true
-            }
-          : null
-      )
     }
 
     if (!desktop) {
@@ -246,6 +240,11 @@ export function useGatewayBoot({
 
       return () => void (cancelled = true)
     }
+
+    // Every $connection publication (this hook's publish() AND store-driven
+    // switches that call setConnection directly) must re-point main's
+    // per-window route, or terminals keep spawning on the previous source.
+    const offActiveRouteMirror = mirrorActiveConnectionRoute(route => desktop.setActiveConnectionRoute?.(route))
 
     // Store-driven switches (Sessions switcher → selectConnection) commit
     // through beginGatewaySwitch(), which runs this window's machine-context
@@ -1493,6 +1492,7 @@ export function useGatewayBoot({
 
     return () => {
       cancelled = true
+      offActiveRouteMirror()
       offSwitchLifecycle()
       endGatewaySwitch()
       clearReconnectTimer()
