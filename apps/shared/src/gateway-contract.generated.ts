@@ -4537,6 +4537,13 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** ``methods_prompt._echo_user_prompt``: an accepted ``prompt.submit`` (never synthesized turns). ``text`` is the display text (a skill send shows its invocation); ``row_id`` is the durable row when the submit-time persist wrote one. */
+export interface UserPromptPayload {
+  text: string
+  images: number
+  row_id?: number | null
+  display_kind?: string | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5822,6 +5829,8 @@ export interface BackendGatewayEventMap {
   'tool.output_risk': ToolOutputRiskPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** A client submitted this user message; peers that did not send it render it before the reply. */
+  'user.prompt': UserPromptPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Voice recorder state changed. */
@@ -5904,6 +5913,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.generating',
   'tool.output_risk',
   'tool.start',
+  'user.prompt',
   'voice.interrupted',
   'voice.status',
   'voice.transcript',
