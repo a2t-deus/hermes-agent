@@ -1423,6 +1423,10 @@ export const en: Translations = {
         'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
       launchModeDesc: 'When off, Sessions opens on the Primary gateway.',
+      hideLocalTitle: 'Hide This device',
+      hideLocalDesc:
+        'Keeps the app-managed local runtime out of the sidebar and switchers. Only available while a remote gateway is primary.',
+      hideLocalPrimaryHint: 'Make a remote gateway primary to hide This device.',
       searchPlaceholder: 'Search gateways…',
       noSearchResults: 'No gateways match your search.',
       loadFailed: 'Could not load connections',

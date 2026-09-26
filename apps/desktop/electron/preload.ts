@@ -278,6 +278,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
     setPrimary: id => ipcRenderer.invoke('hermes:connections:set-primary', id),
     setLaunchMode: mode => ipcRenderer.invoke('hermes:connections:set-launch-mode', mode),
+    setHideLocal: hideLocal => ipcRenderer.invoke('hermes:connections:set-hide-local', hideLocal),
     setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
     test: id => ipcRenderer.invoke('hermes:connections:test', id),
     updateManaged: id => ipcRenderer.invoke('hermes:connections:update-managed', id),

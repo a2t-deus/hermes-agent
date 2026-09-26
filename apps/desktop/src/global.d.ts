@@ -232,6 +232,7 @@ declare global {
         setLaunchMode?: (
           mode: 'last-used' | 'primary'
         ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setHideLocal?: (hideLocal: boolean) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
         // Drain/update/restore one Desktop-managed SSH install. External URL
@@ -1038,6 +1039,9 @@ export interface DesktopConnectionsRegistry {
   // Preserve old installs by defaulting to the explicit primary; users may
   // instead resume the last successfully opened source.
   launchMode?: 'last-used' | 'primary'
+  // Keep This device out of the sidebar/switchers; main only allows it while
+  // a non-local connection is primary.
+  hideLocal?: boolean
   // Last source the Sessions workspace opened successfully. Optional for
   // compatibility with an older Electron main during a rolling app update.
   lastUsed?: string

@@ -47,7 +47,7 @@ import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { sortConnectionsForDisplay, visibleConnections } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
@@ -178,7 +178,7 @@ export function ProfileRail() {
 
   useFleetRoster(multipleConnections)
 
-  const connections = registry?.connections
+  const connections = useMemo(() => (registry ? visibleConnections(registry) : undefined), [registry])
 
   const restGroups = useMemo(
     () =>

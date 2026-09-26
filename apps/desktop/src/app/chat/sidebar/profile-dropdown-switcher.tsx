@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
+import { visibleConnections } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
@@ -96,7 +97,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
     setCreateOpen(true)
   }, [createRequest])
 
-  const connections = registry?.connections
+  const connections = useMemo(() => (registry ? visibleConnections(registry) : undefined), [registry])
 
   const restGroups = useMemo(
     () =>
