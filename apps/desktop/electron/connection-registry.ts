@@ -97,6 +97,9 @@ export interface ConnectionRegistry {
   primary: string
   /** Which saved source Sessions should restore when the app launches. */
   launchMode: 'last-used' | 'primary'
+  /** Keep the app-managed local runtime out of the sidebar and switchers.
+   * Only true while primary is a non-local connection (withHideLocalInvariant). */
+  hideLocal: boolean
   /** Last source the Sessions workspace successfully opened. Additive in v2
    * so registries written before multi-source switching still normalize. */
   lastUsed: string
@@ -1363,6 +1366,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
     version: REGISTRY_VERSION,
     primary,
     launchMode: parsed.launchMode === 'last-used' ? 'last-used' : 'primary',
+    hideLocal: parsed.hideLocal === true,
     lastUsed: connections.some(c => c.id === storedLastUsed) ? storedLastUsed : primary,
     connections
   }
@@ -1371,7 +1375,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
     normalized.quarantined = quarantined
   }
 
-  return normalized
+  return withHideLocalInvariant(normalized)
 }
 
 /**
@@ -1520,7 +1524,14 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
     }
   }
 
-  return { version: REGISTRY_VERSION, primary, launchMode: 'primary', lastUsed: primary, connections }
+  return {
+    version: REGISTRY_VERSION,
+    primary,
+    launchMode: 'primary',
+    hideLocal: false,
+    lastUsed: primary,
+    connections
+  }
 }
 
 /** Insert or replace by id. Input must already be normalized/validated. */
@@ -1549,12 +1560,12 @@ export function removeConnection(registry: ConnectionRegistry, id: string): Conn
 
   const primary = registry.primary === id ? LOCAL_CONNECTION_ID : registry.primary
 
-  return {
+  return withHideLocalInvariant({
     ...registry,
     primary,
     lastUsed: registry.lastUsed === id ? primary : registry.lastUsed,
     connections: registry.connections.filter(c => c.id !== id)
-  }
+  })
 }
 
 /** Point the window/primary backend at another registered connection. */
@@ -1563,7 +1574,7 @@ export function setPrimaryConnection(registry: ConnectionRegistry, id: string): 
     throw new Error(`No connection with id "${id}".`)
   }
 
-  return { ...registry, primary: id }
+  return withHideLocalInvariant({ ...registry, primary: id })
 }
 
 /** Remember the last source the Sessions workspace opened successfully. */
@@ -1595,7 +1606,7 @@ export function reconcileAppliedGlobalConnection(
 
   if (!modeIsRemoteLike(mode)) {
     if (mode === 'local') {
-      return { ...registry, primary: LOCAL_CONNECTION_ID, lastUsed: LOCAL_CONNECTION_ID }
+      return withHideLocalInvariant({ ...registry, primary: LOCAL_CONNECTION_ID, lastUsed: LOCAL_CONNECTION_ID })
     }
 
     // SSH registry identity is managed by its existing registry editor and
@@ -1804,4 +1815,26 @@ export function setConnectionLaunchMode(registry: ConnectionRegistry, launchMode
   }
 
   return { ...registry, launchMode }
+}
+
+function primaryIsLocal(registry: ConnectionRegistry): boolean {
+  const primary = registry.connections.find(c => c.id === registry.primary)
+
+  return !primary || primary.kind === 'local'
+}
+
+/** hideLocal may only hold while a non-local connection is primary; any path
+ * that lands primary back on This device (Make primary, deleting the primary
+ * remote, a local Apply) clears it so the only reachable source never hides. */
+export function withHideLocalInvariant(registry: ConnectionRegistry): ConnectionRegistry {
+  return registry.hideLocal && primaryIsLocal(registry) ? { ...registry, hideLocal: false } : registry
+}
+
+/** Hide/show This device in the sidebar and switchers. Refused while local is primary. */
+export function setConnectionHideLocal(registry: ConnectionRegistry, hideLocal: boolean): ConnectionRegistry {
+  if (hideLocal && primaryIsLocal(registry)) {
+    throw new Error('Make a remote gateway primary before hiding This device.')
+  }
+
+  return { ...registry, hideLocal: Boolean(hideLocal) }
 }

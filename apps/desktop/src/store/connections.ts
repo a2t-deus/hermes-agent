@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { visibleConnections } from '@/lib/connection-display'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import {
@@ -64,7 +65,7 @@ export const $activeConnectionId = computed($connection, connection => connectio
 
 export const $hasMultipleConnections = computed(
   $connectionsRegistry,
-  registry => (registry?.connections.length ?? 0) > 1
+  registry => visibleConnections(registry).length > 1
 )
 
 const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
@@ -265,14 +266,15 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
       return registry
     }
 
-    if (registry.connections.some(connection => connection.id === connectionId)) {
+    if (visibleConnections(registry).some(connection => connection.id === connectionId)) {
       await selectConnection(connectionId, { profile: defaultRoute.profile })
     }
 
     return $connectionsRegistry.get() ?? registry
   }
 
-  const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
+  // A hidden This device is never a launch target; last-used falls back to primary.
+  const lastUsed = visibleConnections(registry).some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 

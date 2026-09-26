@@ -1,4 +1,4 @@
-import type { DesktopRegistryConnection } from '@/global'
+import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 
 export const CONNECTION_SEARCH_THRESHOLD = 8
 
@@ -20,6 +20,16 @@ export function sortConnectionsForDisplay<T extends Pick<DesktopRegistryConnecti
       connectionLabelCollator.compare(left.id, right.id)
     )
   })
+}
+
+/** Sources the sidebar and switchers may show: This device drops out once the
+ * user hid it (Settings keeps listing it so it can be un-hidden). */
+export function visibleConnections(
+  registry: null | Pick<DesktopConnectionsRegistry, 'connections' | 'hideLocal'> | undefined
+): DesktopRegistryConnection[] {
+  const connections = registry?.connections ?? []
+
+  return registry?.hideLocal ? connections.filter(connection => connection.kind !== 'local') : connections
 }
 
 function normalizeSearchText(value: string): string {

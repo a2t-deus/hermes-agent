@@ -194,6 +194,7 @@ import {
   resolveRegistryLocalRoute,
   reuseMatchingPrimaryRemoteBackend,
   reuseMatchingPrimarySshBackend,
+  setConnectionHideLocal,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -201,7 +202,8 @@ import {
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
   updateEligibility,
-  upsertConnection
+  upsertConnection,
+  withHideLocalInvariant
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
@@ -9312,6 +9314,9 @@ function preserveCorruptRegistrySidecar() {
 }
 
 function writeDesktopConnectionsRegistry(registry) {
+  // Every mutation path (drift reconcile, v1 Apply, remove) funnels here, so a
+  // write can never persist hideLocal with This device as primary.
+  registry = withHideLocalInvariant(registry)
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTIONS_REGISTRY_PATH), { recursive: true })
   // Owner-only for the same reason as connection.json: entries carry
   // safeStorage-encrypted tokens plus URLs and SSH host/user/keyPath.
@@ -9355,6 +9360,7 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
     version: registry.version,
     primary: registry.primary,
     launchMode: registry.launchMode,
+    hideLocal: registry.hideLocal,
     lastUsed: registry.lastUsed,
     secureTokenStorage,
     connections: registry.connections.map(sanitizeRegistryConnection),
@@ -16267,6 +16273,12 @@ ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
 ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
   assertCanMutateManagedPrimaryRouting()
   const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
+  writeDesktopConnectionsRegistry(registry)
+
+  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
+})
+ipcMain.handle('hermes:connections:set-hide-local', async (_event, hideLocal) => {
+  const registry = setConnectionHideLocal(readDesktopConnectionsRegistry(), hideLocal === true)
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }

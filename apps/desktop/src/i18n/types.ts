@@ -1279,6 +1279,9 @@ export interface Translations {
       stagedNote: string
       launchModeTitle: string
       launchModeDesc: string
+      hideLocalTitle: string
+      hideLocalDesc: string
+      hideLocalPrimaryHint: string
       searchPlaceholder: string
       noSearchResults: string
       loadFailed: string
