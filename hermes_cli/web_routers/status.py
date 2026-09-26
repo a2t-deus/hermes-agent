@@ -23,6 +23,7 @@ from gateway.status import (
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __version__, __release_date__
+from hermes_cli.fork_version import __fork_version__, fork_commit
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
@@ -115,7 +116,8 @@ async def get_ssh_ownership(request: Request):
 @router.get("/api/health")
 async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes."""
-    return {"ok": True, "version": __version__,
+    return {"ok": True, "version": __version__, "fork_version": __fork_version__,
+            "commit": fork_commit(),
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
@@ -497,6 +499,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": __version__, "release_date": __release_date__,
+            "fork_version": __fork_version__, "commit": fork_commit(),
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

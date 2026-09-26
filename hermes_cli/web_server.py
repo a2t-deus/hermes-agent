@@ -149,6 +149,9 @@ async def _lifespan(app: "FastAPI"):
     # overlap ``npm install`` / ``npm run build``. Locks live on app.state (not
     # module globals) so they bind to the running loop, not the import-time one.
     app.state.chat_argv_lock = asyncio.Lock()
+    # Resolve the checkout sha once, off-loop, so /api/health never shells out per request.
+    from hermes_cli.fork_version import fork_commit
+    await asyncio.to_thread(fork_commit)
 
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
