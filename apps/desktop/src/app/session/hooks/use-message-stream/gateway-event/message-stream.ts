@@ -19,6 +19,7 @@ import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
+import { withPeerUserPrompt } from './peer-user-prompt'
 import type { GatewayEventContext } from './types'
 
 function firstBillingLine(text: string): string {
@@ -162,6 +163,22 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // resetting to accept-time here would visibly snap the timer back
       // after the submit-time seed above already started it.
       setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
+    }
+
+    return true
+  }
+
+  if (event.type === 'user.prompt') {
+    const text = coerceGatewayText(payload?.text)
+
+    if (sessionId && text) {
+      const rowId = typeof payload?.row_id === 'number' ? payload.row_id : undefined
+
+      updateSessionState(sessionId, state => {
+        const messages = withPeerUserPrompt(state.messages, state.streamId, text, rowId, occurredAt)
+
+        return messages === state.messages ? state : { ...state, messages }
+      })
     }
 
     return true

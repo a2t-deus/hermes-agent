@@ -35515,6 +35515,50 @@
         "title": "UsageModel",
         "type": "object"
       },
+      "UserPromptPayload": {
+        "additionalProperties": false,
+        "description": "``methods_prompt._echo_user_prompt``: an accepted ``prompt.submit`` (never synthesized turns).\n``text`` is the display text (a skill send shows its invocation); ``row_id`` is the durable row\nwhen the submit-time persist wrote one.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "images": {
+            "title": "Images",
+            "type": "integer"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          }
+        },
+        "required": [
+          "text",
+          "images"
+        ],
+        "title": "UserPromptPayload",
+        "type": "object"
+      },
       "ValueResult": {
         "additionalProperties": false,
         "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
@@ -38500,6 +38544,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "user.prompt",
+      "summary": "A client submitted this user message; peers that did not send it render it before the reply.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/UserPromptPayload"
           }
         }
       ]

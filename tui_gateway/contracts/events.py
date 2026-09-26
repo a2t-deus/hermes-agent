@@ -107,6 +107,21 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 event("message.start", None, doc="A turn began streaming; no payload.")
 
 
+class UserPromptPayload(Payload):
+    """``methods_prompt._echo_user_prompt``: an accepted ``prompt.submit`` (never synthesized turns).
+    ``text`` is the display text (a skill send shows its invocation); ``row_id`` is the durable row
+    when the submit-time persist wrote one."""
+
+    text: str
+    images: int
+    row_id: int | None = None
+    display_kind: str | None = None
+
+
+event("user.prompt", UserPromptPayload,
+      doc="A client submitted this user message; peers that did not send it render it before the reply.")
+
+
 class StreamDeltaPayload(Payload):
     """``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),
     ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``

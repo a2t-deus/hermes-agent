@@ -487,6 +487,20 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     return error
 
 
+def _echo_user_prompt(sid, session, text, display_kind, row_id=None) -> None:
+    """Every viewer of *sid* learns the submitted user text before ``message.start``: the sender
+    drew it optimistically, a peer window/device has no other live source for it."""
+    if display_kind == "hidden" or not isinstance(text, str) or not text.strip():
+        return
+    invocation = _skill_scaffold_projection(text)
+    payload = {"text": invocation or text, "images": len(session.get("attached_images") or [])}
+    if isinstance(row_id, int):
+        payload["row_id"] = row_id
+    if invocation:
+        payload["display_kind"] = "skill_invocation"
+    _emit("user.prompt", sid, payload)
+
+
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
 ):
@@ -664,6 +678,9 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
+        # Before dispatch: the child's message.start must not overtake the echo.
+        if not has_truncation:  # a peer's uncut transcript cannot place a rewind's text
+            _echo_user_prompt(sid, session, text, display_kind)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
@@ -687,6 +704,8 @@ def _(rid, params: dict) -> dict:
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):
         survivor_fields["user_row_id"] = staged_user["_row_id"]
+    if not (turn_isolation or has_truncation):  # an isolated dispatch that fell back inline already echoed
+        _echo_user_prompt(sid, session, text, display_kind, staged_user.get("_row_id"))
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
