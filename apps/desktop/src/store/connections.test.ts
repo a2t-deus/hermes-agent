@@ -218,6 +218,23 @@ describe('connection registry cache', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it('never restores a hidden This device at launch; last-used local falls back to primary', async () => {
+    list.mockResolvedValueOnce({
+      ...registry,
+      primary: 'homelab',
+      lastUsed: 'local',
+      launchMode: 'last-used',
+      hideLocal: true
+    })
+    $connection.set({ connectionId: 'homelab', mode: 'remote' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalledWith('local', expect.anything(), expect.anything())
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
+    expect($activeConnectionId.get()).toBe('homelab')
+  })
+
   it('boot restore yields to a source the user already picked while boot was settling', async () => {
     // Primary is local, launch mode is primary. The user clicks a fleet-rail
     // square on the homelab gateway before the boot-time restore runs. The

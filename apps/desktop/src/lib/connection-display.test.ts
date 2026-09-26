@@ -6,7 +6,8 @@ import {
   connectionEndpoint,
   connectionMatchesQuery,
   connectionTooltip,
-  sortConnectionsForDisplay
+  sortConnectionsForDisplay,
+  visibleConnections
 } from './connection-display'
 
 const connection = (
@@ -16,6 +17,15 @@ const connection = (
 ): DesktopRegistryConnection => ({ id, kind, label, tokenPreview: null, tokenSet: false })
 
 describe('connection display helpers', () => {
+  it('drops This device only while the registry hides it', () => {
+    const connections = [connection('local', 'This device', 'local'), connection('mini', 'Mini')]
+
+    expect(visibleConnections({ connections }).map(c => c.id)).toEqual(['local', 'mini'])
+    expect(visibleConnections({ connections, hideLocal: false }).map(c => c.id)).toEqual(['local', 'mini'])
+    expect(visibleConnections({ connections, hideLocal: true }).map(c => c.id)).toEqual(['mini'])
+    expect(visibleConnections(null)).toEqual([])
+  })
+
   it('anchors local first and sorts labels case-insensitively with numeric order', () => {
     const sorted = sortConnectionsForDisplay([
       connection('remote-10', 'Studio 10'),

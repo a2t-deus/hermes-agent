@@ -282,6 +282,8 @@ export function ConnectionsRegistrySection() {
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+  const primaryKind = registry?.connections.find(c => c.id === registry.primary)?.kind
+  const primaryIsLocal = !primaryKind || primaryKind === 'local'
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
     setRegistry(next)
@@ -547,6 +549,25 @@ export function ConnectionsRegistrySection() {
       try {
         const result = await bridge.setLaunchMode(mode)
         publishRegistry(result.registry)
+      } catch (err) {
+        notifyError(err, s.saveFailed)
+      } finally {
+        setLaunchModeBusy(false)
+      }
+    },
+    [bridge, publishRegistry, s.saveFailed]
+  )
+
+  const setHideLocal = useCallback(
+    async (hideLocal: boolean) => {
+      if (!bridge?.setHideLocal) {
+        return
+      }
+
+      setLaunchModeBusy(true)
+
+      try {
+        publishRegistry((await bridge.setHideLocal(hideLocal)).registry)
       } catch (err) {
         notifyError(err, s.saveFailed)
       } finally {
@@ -1036,6 +1057,13 @@ export function ConnectionsRegistrySection() {
             disabled={launchModeBusy || !bridge?.setLaunchMode}
             label={s.launchModeTitle}
             onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
+          />
+          <ToggleRow
+            checked={Boolean(registry.hideLocal)}
+            description={primaryIsLocal ? s.hideLocalPrimaryHint : s.hideLocalDesc}
+            disabled={launchModeBusy || !bridge?.setHideLocal || (primaryIsLocal && !registry.hideLocal)}
+            label={s.hideLocalTitle}
+            onChange={enabled => void setHideLocal(enabled)}
           />
         </div>
       )}

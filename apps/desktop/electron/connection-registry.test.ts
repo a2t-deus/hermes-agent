@@ -34,6 +34,7 @@ import {
   resolvedConnectionId,
   resolveRegistryLocalRoute,
   reuseMatchingPrimarySshBackend,
+  setConnectionHideLocal,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -41,7 +42,8 @@ import {
   shouldRetrySshInventory,
   uniqueLabel,
   updateEligibility,
-  upsertConnection
+  upsertConnection,
+  withHideLocalInvariant
 } from './connection-registry'
 
 function emptyRegistry(): ConnectionRegistry {
@@ -350,6 +352,7 @@ test('agentHandle bare when unique, @name-device shape when duplicated', () => {
 test('resolvedConnectionId accepts only a current exact descriptor id and never falls back', () => {
   const registry: ConnectionRegistry = {
     version: REGISTRY_VERSION,
+    hideLocal: false,
     primary: 'remote-a',
     launchMode: 'primary',
     lastUsed: 'remote-a',
@@ -425,6 +428,7 @@ test('resolvedConnectionId reuses the exact URL envelope and rejects weak or dup
 
   const registry: ConnectionRegistry = {
     version: REGISTRY_VERSION,
+    hideLocal: false,
     primary: 'remote-token',
     launchMode: 'primary',
     lastUsed: 'remote-token',
@@ -564,6 +568,7 @@ test('resolvedConnectionId keeps same-host SSH routes distinct by port, key, pat
 
   const registry: ConnectionRegistry = {
     version: REGISTRY_VERSION,
+    hideLocal: false,
     primary: 'ssh-base',
     launchMode: 'primary',
     lastUsed: 'ssh-base',
@@ -1585,6 +1590,52 @@ test('last-used source and launch mode validate their persisted values', () => {
   assert.equal(setLastUsedConnection(registry, entry.id).lastUsed, entry.id)
   assert.equal(setConnectionLaunchMode(registry, 'last-used').launchMode, 'last-used')
   assert.throws(() => setConnectionLaunchMode(registry, 'sometimes'), /Unknown connection launch mode/)
+})
+
+test('hideLocal parses strictly, defaults false, and cannot load with local primary', () => {
+  assert.equal(emptyRegistry().hideLocal, false)
+  assert.equal(migrateV1ToRegistry({}).hideLocal, false)
+
+  const remote = { id: 'mini', kind: 'remote', label: 'Mini', url: 'http://mini:9119' }
+  assert.equal(normalizeRegistry({ primary: 'mini', hideLocal: true, connections: [remote] }).hideLocal, true)
+  assert.equal(normalizeRegistry({ primary: 'mini', hideLocal: 'yes', connections: [remote] }).hideLocal, false)
+  // A hand-edit (or a vanished primary) that lands primary on local clears it.
+  assert.equal(normalizeRegistry({ primary: 'local', hideLocal: true, connections: [remote] }).hideLocal, false)
+  assert.equal(normalizeRegistry({ primary: 'gone', hideLocal: true, connections: [remote] }).hideLocal, false)
+})
+
+test('setConnectionHideLocal refuses while local is primary and toggles while a remote is', () => {
+  let registry = emptyRegistry()
+  assert.throws(() => setConnectionHideLocal(registry, true), /remote gateway primary/)
+  assert.equal(setConnectionHideLocal(registry, false).hideLocal, false)
+
+  const remote = normalizeConnectionInput({ kind: 'remote', label: 'Mini', url: 'http://mini:9119' }, registry)
+  registry = setPrimaryConnection(upsertConnection(registry, remote), remote.id)
+  registry = setConnectionHideLocal(registry, true)
+  assert.equal(registry.hideLocal, true)
+  assert.equal(setConnectionHideLocal(registry, false).hideLocal, false)
+})
+
+test('hideLocal auto-clears when primary returns to local', () => {
+  let registry = emptyRegistry()
+  const mini = normalizeConnectionInput({ kind: 'remote', label: 'Mini', url: 'http://mini:9119' }, registry)
+  registry = upsertConnection(registry, mini)
+  const laptop = normalizeConnectionInput({ kind: 'remote', label: 'Laptop', url: 'http://laptop:9119' }, registry)
+  registry = setConnectionHideLocal(setPrimaryConnection(upsertConnection(registry, laptop), mini.id), true)
+
+  // Make primary on This device.
+  assert.equal(setPrimaryConnection(registry, LOCAL_CONNECTION_ID).hideLocal, false)
+  // Remote → remote keeps it.
+  assert.equal(setPrimaryConnection(registry, laptop.id).hideLocal, true)
+  // Deleting the primary remote retargets primary to local.
+  assert.equal(removeConnection(registry, mini.id).hideLocal, false)
+  // Deleting a non-primary remote keeps it.
+  assert.equal(removeConnection(registry, laptop.id).hideLocal, true)
+  // Settings → Gateway local Apply.
+  assert.equal(reconcileAppliedGlobalConnection(registry, { mode: 'local' }).hideLocal, false)
+  // The write-time guard main.ts applies to every persisted registry.
+  assert.equal(withHideLocalInvariant({ ...registry, primary: LOCAL_CONNECTION_ID }).hideLocal, false)
+  assert.equal(withHideLocalInvariant(registry), registry)
 })
 
 test('upsertConnection replaces by id and appends new ids', () => {

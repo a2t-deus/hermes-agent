@@ -16,6 +16,7 @@ import {
 const list = vi.fn()
 const save = vi.fn()
 const remove = vi.fn()
+const setHideLocal = vi.fn()
 const setLaunchMode = vi.fn()
 const setPrimary = vi.fn()
 const test = vi.fn()
@@ -53,12 +54,13 @@ beforeEach(() => {
   list.mockResolvedValue(registry)
   save.mockResolvedValue({ connection: registry.connections[1], ok: true, registry })
   remove.mockResolvedValue({ ok: true, registry: { ...registry, connections: [registry.connections[0]] } })
+  setHideLocal.mockResolvedValue({ ok: true, registry: { ...registry, primary: 'homelab', hideLocal: true } })
   setLaunchMode.mockResolvedValue({ ok: true, registry: { ...registry, launchMode: 'last-used' } })
   setPrimary.mockResolvedValue({ ok: true, registry: { ...registry, primary: 'homelab' } })
   test.mockResolvedValue({ ok: true, reachable: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { connections: { list, remove, save, setLaunchMode, setPrimary, test } }
+    value: { connections: { list, remove, save, setHideLocal, setLaunchMode, setPrimary, test } }
   })
 })
 
@@ -244,6 +246,25 @@ describe('ConnectionsRegistrySection', () => {
     )
 
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
+  })
+
+  it('disables Hide This device with a hint while This device is primary', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    const toggle = await screen.findByRole('switch', { name: 'Hide This device' })
+
+    expect((toggle as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText('Make a remote gateway primary to hide This device.')).toBeTruthy()
+  })
+
+  it('hides This device while a remote gateway is primary and keeps it listed', async () => {
+    list.mockResolvedValue({ ...registry, primary: 'homelab' })
+    render(<ConnectionsRegistrySection />)
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Hide This device' }))
+
+    await waitFor(() => expect(setHideLocal).toHaveBeenCalledWith(true))
+    expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
   })
 
   it('offers the launch preference even for a single source', async () => {

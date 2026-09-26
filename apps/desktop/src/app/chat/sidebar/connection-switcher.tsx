@@ -20,7 +20,8 @@ import {
   CONNECTION_SEARCH_THRESHOLD,
   connectionMatchesQuery,
   connectionTooltip,
-  sortConnectionsForDisplay
+  sortConnectionsForDisplay,
+  visibleConnections
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
@@ -41,7 +42,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const connectionListRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
-  const connections = useMemo(() => sortConnectionsForDisplay(registry?.connections ?? []), [registry?.connections])
+  const connections = useMemo(() => sortConnectionsForDisplay(visibleConnections(registry)), [registry])
 
   const activeConnection = connections.find(connection => connection.id === activeConnectionId)
   const searchable = connections.length >= CONNECTION_SEARCH_THRESHOLD
