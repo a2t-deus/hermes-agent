@@ -9,8 +9,8 @@ import {
   cookieHeader,
   mintWsTicket,
   readCookieJar,
-  remoteGatewayWsUrl,
   RemoteAuthExpiredError,
+  remoteGatewayWsUrl,
   resolveRemoteAttach,
   ticketSubprotocols,
   writeCookieJar
@@ -126,6 +126,7 @@ describe('mintWsTicket', () => {
 
   it('persists rotated cookies so the NEXT dial and the next launch stay signed in', async () => {
     writeCookieJar(cookieFile, { cookies: { hermes_session_at: 'at-1' }, username: 'sagi' })
+
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ticket: 't-1' }, { headers: { 'set-cookie': 'hermes_session_at=at-2; Path=/' } })
     )

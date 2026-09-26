@@ -832,10 +832,7 @@ describe('GatewayClient remote attach mode', () => {
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 5000 })
 
     expect(minted).toEqual(['ticket-1', 'ticket-2'])
-    expect(FakeWebSocket.instances[1]!.protocols).toEqual([
-      'hermes-gateway-v1',
-      'hermes-gateway-ticket.ticket-2'
-    ])
+    expect(FakeWebSocket.instances[1]!.protocols).toEqual(['hermes-gateway-v1', 'hermes-gateway-ticket.ticket-2'])
 
     gw.kill()
   })
