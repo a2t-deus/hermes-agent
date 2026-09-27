@@ -1,3 +1,4 @@
+import { ambientOwnerConnectionId } from '@/api/client'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -17,6 +18,7 @@ import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { $connectionsRegistry, hasRegistryTopology } from '@/store/connection-registry-state'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -2157,6 +2159,14 @@ export async function probeStoredSession(
     // stamp is preserved for backend compatibility.
     session.profile ||= activeKey
 
+    // The active source served this row, so it owns it. Without the tag a
+    // registry-owned row routes by bare profile (#97511 collapse).
+    const ambient = ambientOwnerConnectionId()
+
+    if (ambient && ambient !== 'local' && !session.connection_id?.trim()) {
+      session.connection_id = ambient
+    }
+
     upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
     return { status: 'found', session }
@@ -2189,6 +2199,32 @@ export async function probeStoredSession(
       return { status: 'found', session }
     } catch (error) {
       // Not on this profile; try the next.
+      recordFailure(error)
+    }
+  }
+
+  // Registry only: the owner may be another registered backend (a session on
+  // the primary while the window's active source is a secondary). Probe each
+  // other connection once — primary first, `default` profile — and stamp the
+  // hit so the next RPC resolves on the sync row rung. Nothing found stays
+  // unresolved: the dispatcher still fails closed.
+  const registry = hasRegistryTopology() ? $connectionsRegistry.get() : null
+  const active = ambientOwnerConnectionId()
+
+  const foreign = [registry?.primary, ...(registry?.connections ?? []).map(connection => connection.id)]
+    .map(id => id?.trim() ?? '')
+    .filter((id, index, ids) => id && id !== 'local' && id !== active && ids.indexOf(id) === index)
+
+  for (const connectionId of foreign) {
+    try {
+      const session = await getSession(storedSessionId, { connectionId, profile: 'default' })
+      session.connection_id = connectionId
+      session.profile = 'default'
+      upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
+
+      return { status: 'found', session }
+    } catch (error) {
+      // Not on this connection; try the next.
       recordFailure(error)
     }
   }
