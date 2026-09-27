@@ -371,16 +371,20 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
 // Mutations take the owning `profile` so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+export function setSessionArchived(id: string, archived: boolean, scope?: ProfileScope): Promise<{ ok: boolean }> {
   // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
   // backend reads its target DB from body.profile (_open_session_db_for_profile).
   // Passing it only as request.profile (Electron routing) is not enough on a
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
-  const owner = sessionWriteProfile(profile)
+  // An exact owner route also pins the registry connection that holds the row.
+  const route = typeof scope === 'object' ? scope : undefined
+  const connectionId = route?.connectionId?.trim()
+  const owner = sessionWriteProfile(typeof scope === 'object' ? scope?.profile : scope)
 
   return hermesApi<{ ok: boolean }>({
+    ...(connectionId ? { connectionId } : {}),
     ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
@@ -435,7 +439,11 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // the given `profile`). The backend resolves exact ids and unique prefixes and
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
-export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
+export function getSession(
+  id: string,
+  profile?: ProfileScope,
+  options: { timeoutMs?: number } = {}
+): Promise<SessionInfo> {
   // Pin the read to the session's OWNER connection (#125372): the ambient dial
   // 404s on the wrong backend whenever two connections expose a same-named
   // profile.
@@ -444,6 +452,7 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 
   return hermesApi<SessionInfo>({
     ...scope,
+    ...options,
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }

@@ -1970,6 +1970,9 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
   setSessions(prepend)
 }
 
+// A dead tailnet host must not stall owner resolution for the 30 s default.
+const FOREIGN_OWNER_PROBE_TIMEOUT_MS = 4_000
+
 function upsertResolvedSession(
   session: SessionInfo,
   storedSessionId: string,
@@ -2217,7 +2220,11 @@ export async function probeStoredSession(
 
   for (const connectionId of foreign) {
     try {
-      const session = await getSession(storedSessionId, { connectionId, profile: 'default' })
+      const session = await getSession(
+        storedSessionId,
+        { connectionId, profile: 'default' },
+        { timeoutMs: FOREIGN_OWNER_PROBE_TIMEOUT_MS }
+      )
       session.connection_id = connectionId
       session.profile = 'default'
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
@@ -2249,9 +2256,16 @@ export async function resolveSessionProfile(storedSessionId: null | string): Pro
     return undefined
   }
 
-  const profile = (await resolveStoredSession(storedSessionId))?.profile?.trim()
+  const row = await resolveStoredSession(storedSessionId)
+  const connectionId = row?.connection_id?.trim()
 
-  return profile || undefined
+  // A bare profile name only means something on the ambient connection; a row
+  // owned by another registry connection must route by its exact owner.
+  if (connectionId && connectionId !== ambientOwnerConnectionId()) {
+    return undefined
+  }
+
+  return row?.profile?.trim() || undefined
 }
 
 /**

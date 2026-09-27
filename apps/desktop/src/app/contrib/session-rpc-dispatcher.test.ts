@@ -343,14 +343,17 @@ describe('createSessionRpcDispatcher: REST probe finds a session owned by anothe
   const SID = '20260914_131543_01d58a'
   let apiCalls: { connectionId?: string; path: string }[] = []
 
-  function install(owner: null | string) {
+  function install(
+    owner: null | string,
+    registry = {
+      primary: 'laptop-tailnet',
+      connections: [{ id: 'local' }, { id: 'mini-tailnet' }, { id: 'laptop-tailnet' }]
+    }
+  ) {
     apiCalls = []
     gatewayMocks.activeConnectionId = 'mini-tailnet'
     setApiRequestConnection('mini-tailnet')
-    $connectionsRegistry.set({
-      primary: 'laptop-tailnet',
-      connections: [{ id: 'local' }, { id: 'mini-tailnet' }, { id: 'laptop-tailnet' }]
-    } as never)
+    $connectionsRegistry.set(registry as never)
     $profiles.set([{ name: 'default' }, { name: 'a' }, { name: 'b' }] as never)
     probe.resolveSessionOwner.mockImplementation(id => probe.realResolveSessionOwner(id))
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -395,6 +398,28 @@ describe('createSessionRpcDispatcher: REST probe finds a session owned by anothe
     const probes = apiCalls.length
     await expect(request()('image.attach_bytes', params)).resolves.toEqual({ routed: true })
     expect(apiCalls).toHaveLength(probes)
+  })
+
+  it('probes the primary first and skips a connection that rejects', async () => {
+    // Owner is a non-primary secondary; the dead primary sorts before it.
+    install('laptop-tailnet', {
+      primary: 'dead-tailnet',
+      connections: [{ id: 'local' }, { id: 'mini-tailnet' }, { id: 'laptop-tailnet' }, { id: 'dead-tailnet' }]
+    })
+
+    await expect(
+      request()('image.attach_bytes', { session_id: 'rt-laptop', content_base64: 'x', filename: 'a.png' })
+    ).resolves.toEqual({ routed: true })
+    expect(apiCalls.filter(call => call.connectionId !== 'mini-tailnet').map(call => call.connectionId)).toEqual([
+      'dead-tailnet',
+      'laptop-tailnet'
+    ])
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith(
+      'laptop-tailnet',
+      'default',
+      'image.attach_bytes',
+      expect.anything()
+    )
   })
 
   it('still fails closed when no connection holds the session', async () => {
