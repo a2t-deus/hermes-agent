@@ -22,13 +22,19 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: gatewayMocks.requestGatewayForProfile
 }))
 
-const probe = vi.hoisted(() => ({ resolveSessionOwner: vi.fn(async () => undefined as unknown) }))
+const probe = vi.hoisted(() => ({
+  realResolveSessionOwner: undefined as unknown as (id: null | string) => Promise<unknown>,
+  resolveSessionOwner: vi.fn(async (_id: null | string) => undefined as unknown)
+}))
+
 const sessionMocks = vi.hoisted(() => ({ requestSessionResume: vi.fn() }))
 
-vi.mock('@/app/session/hooks/use-session-actions/utils', async importActual => ({
-  ...(await importActual<Record<string, unknown>>()),
-  resolveSessionOwner: probe.resolveSessionOwner
-}))
+vi.mock('@/app/session/hooks/use-session-actions/utils', async importActual => {
+  const actual = await importActual<Record<string, unknown>>()
+  probe.realResolveSessionOwner = actual.resolveSessionOwner as typeof probe.realResolveSessionOwner
+
+  return { ...actual, resolveSessionOwner: probe.resolveSessionOwner }
+})
 
 vi.mock('@/store/session', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
@@ -36,6 +42,7 @@ vi.mock('@/store/session', async importActual => ({
 }))
 
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
+const { setApiRequestConnection } = await import('@/api/client')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
 
@@ -326,5 +333,76 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     await expect(request('session.activate', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
 
     expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
+  })
+})
+
+describe('createSessionRpcDispatcher: REST probe finds a session owned by another registry connection', () => {
+  // Laptop shape: the session lives on the registry PRIMARY while the window's
+  // active source is the Mini. No tile, hint, row or event owner — only the
+  // real async probe can name the owner.
+  const SID = '20260914_131543_01d58a'
+  let apiCalls: { connectionId?: string; path: string }[] = []
+
+  function install(owner: null | string) {
+    apiCalls = []
+    gatewayMocks.activeConnectionId = 'mini-tailnet'
+    setApiRequestConnection('mini-tailnet')
+    $connectionsRegistry.set({
+      primary: 'laptop-tailnet',
+      connections: [{ id: 'local' }, { id: 'mini-tailnet' }, { id: 'laptop-tailnet' }]
+    } as never)
+    $profiles.set([{ name: 'default' }, { name: 'a' }, { name: 'b' }] as never)
+    probe.resolveSessionOwner.mockImplementation(id => probe.realResolveSessionOwner(id))
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      api: vi.fn(async (req: { connectionId?: string; path: string }) => {
+        apiCalls.push({ connectionId: req.connectionId, path: req.path })
+
+        if (req.connectionId === owner && req.path.includes(SID)) {
+          return makeSessionInfo({ id: SID, profile: 'default' })
+        }
+
+        throw Object.assign(new Error('404 session not found'), { status: 404 })
+      })
+    }
+  }
+
+  function request() {
+    return createSessionRpcDispatcher({
+      ambientRequest: vi.fn(async () => ({ ambient: true })) as never,
+      runtimeIdByStoredSessionIdRef: { current: new Map([[SID, 'rt-laptop']]) },
+      selectedStoredSessionIdRef: { current: SID },
+      sessionStateByRuntimeIdRef: { current: new Map() }
+    })
+  }
+
+  afterEach(() => {
+    setApiRequestConnection(null)
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('routes image.attach_bytes to the primary that holds the session, then resolves synchronously', async () => {
+    install('laptop-tailnet')
+    const params = { session_id: 'rt-laptop', content_base64: 'x', filename: 'a.png' }
+
+    await expect(request()('image.attach_bytes', params)).resolves.toEqual({ routed: true })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith(
+      'laptop-tailnet',
+      'default',
+      'image.attach_bytes',
+      expect.anything()
+    )
+
+    const probes = apiCalls.length
+    await expect(request()('image.attach_bytes', params)).resolves.toEqual({ routed: true })
+    expect(apiCalls).toHaveLength(probes)
+  })
+
+  it('still fails closed when no connection holds the session', async () => {
+    install(null)
+
+    await expect(
+      request()('image.attach_bytes', { session_id: 'rt-laptop', content_base64: 'x', filename: 'a.png' })
+    ).rejects.toSatisfy(isSessionOwnerResolutionError)
+    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
   })
 })
