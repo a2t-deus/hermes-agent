@@ -146,4 +146,18 @@ describe('delete/archive of a session owned by another registry connection', () 
     expect(setSessionArchived).not.toHaveBeenCalledWith(SID, true, 'default')
     expectOwnerRouteOrFailClosed(vi.mocked(setSessionArchived).mock.calls.map(([id, , owner]) => [id, owner]))
   })
+
+  it('fails closed for an ambient-tagged, profile-less row the probes miss', async () => {
+    // listSessions stamps untagged rows with the active connection; a stamp is
+    // not a resolved owner, so it must not route to the ambient 'default'.
+    setSessions([{ ...untaggedRow(), connection_id: 'mini-tailnet' } as SessionInfo])
+    vi.mocked(getSession).mockRejectedValue(Object.assign(new Error('404 session not found'), { status: 404 }))
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession(SID))
+    await act(() => handle.archiveSession(SID))
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(setSessionArchived).not.toHaveBeenCalled()
+  })
 })
