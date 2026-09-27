@@ -2695,12 +2695,16 @@ export function useSessionActions({
       // the owning profile instead of the ambient one.
       const stampedProfile = removed?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      // Re-read after the resolve: a probe hit on another registry connection
+      // tags the row, and the DELETE must land there, not on the ambient one.
+      const ownerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
 
       // Listed profile-less row + multiple profiles + unresolved owner:
       // never fall through to the primary backend (fake already_absent).
       if (
         listed &&
         !stampedProfile &&
+        !ownerRoute &&
         !profile?.trim() &&
         $profiles.get().filter(item => item.name.trim()).length > 1
       ) {
@@ -2723,7 +2727,7 @@ export function useSessionActions({
             connectionId: removed.connection_id,
             profile: removed.profile || 'default'
           }
-        : profile
+        : (ownerRoute ?? profile)
 
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -2836,10 +2840,13 @@ export function useSessionActions({
       const archived = listed?.session
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
+      // Same as removeSession: archive on the connection the resolve found.
+      const ownerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
 
       if (
         listed &&
         !stampedProfile &&
+        !ownerRoute &&
         !profile?.trim() &&
         $profiles.get().filter(item => item.name.trim()).length > 1
       ) {
@@ -2866,7 +2873,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, ownerRoute ?? profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
