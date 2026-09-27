@@ -2892,7 +2892,8 @@ export function useSessionActions({
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
       // Re-read after the resolve: a probe hit on another registry connection
       // tags the row, and the DELETE must land there, not on the ambient one.
-      const ownerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
+      const resolvedRow = cachedSessionRow(storedSessionId)
+      const ownerRoute = resolvedRow?.profile?.trim() ? sessionOwnerRouteFromRow(resolvedRow) : undefined
 
       // Listed profile-less row + multiple profiles + unresolved owner:
       // never fall through to the primary backend (fake already_absent).
@@ -3084,7 +3085,8 @@ export function useSessionActions({
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
       // Same as removeSession: archive on the connection the resolve found.
-      const ownerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
+      const resolvedRow = cachedSessionRow(storedSessionId)
+      const ownerRoute = resolvedRow?.profile?.trim() ? sessionOwnerRouteFromRow(resolvedRow) : undefined
 
       if (
         listed &&
