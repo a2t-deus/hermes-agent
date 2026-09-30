@@ -1243,7 +1243,12 @@ def _(rid, params: dict) -> dict:
     target = _str_param(params, "session_id")
     if not target:
         return _err(rid, 4006, "session_id required")
+    profile_home = _profile_home(params.get("profile"))
+    # A live runtime id counts only inside the requested profile: an explicit ``profile`` never reaches
+    # (or cancels the asks of) another profile's runtime; it falls through to a stored lookup instead.
     session = _sessions.get(target)
+    if session is not None and params.get("profile") and not _live_profile_matches(session, profile_home):
+        session = None
     with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
@@ -1265,8 +1270,7 @@ def _(rid, params: dict) -> dict:
             cancelled = cancel_pending_for_settle(keys, profile_home=session.get("profile_home") or None,
                                                   any_profile=False, sids=(target,))
         else:
-            cancelled = cancel_pending_for_settle(
-                keys, profile_home=_profile_home(params.get("profile")), any_profile=False)
+            cancelled = cancel_pending_for_settle(keys, profile_home=profile_home, any_profile=False)
     return _ok(rid, {"settled": settled, "session_key": key, "cancelled_requests": cancelled})
 
 

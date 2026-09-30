@@ -805,8 +805,12 @@ def _cancel_pending_for_settle(db, sid: str, profile: Optional[str]) -> None:
     with contextlib.suppress(Exception):
         keys.add(db.get_compression_tip(sid) or sid)
     try:
-        gateway.cancel_pending_for_settle(
-            keys, profile_home=gateway._profile_home(profile), any_profile=False)
+        # Read-only resolve (``_history_profile_home``): ``gateway._profile_home`` would register the
+        # profile as served and flip this process into multi-profile hosting.
+        home = _history_profile_home(profile) if profile else None  # omitted = the launch profile
+        if home is not None and Path(home).resolve() == Path(gateway._hermes_home).resolve():
+            home = None
+        gateway.cancel_pending_for_settle(keys, profile_home=home, any_profile=False)
     except Exception:
         _log.exception("settle: cancelling open requests for %s failed", sid)
 
