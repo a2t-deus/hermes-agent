@@ -7,9 +7,11 @@ helpers are reached via the late-binding seam so monkeypatching keeps working.
 """
 
 import asyncio
+import contextlib
 import json
 import re
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -231,6 +233,7 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+                s["settled"] = s.get("settled_at") is not None
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same
@@ -799,7 +802,25 @@ _RENAME_FLAG_SETTERS = (
     ("hidden", lambda db, sid, v: db.set_session_hidden(sid, v)),
     ("pinned", lambda db, sid, v: db.set_session_pinned(sid, v)),
     ("unread", lambda db, sid, v: db.set_session_read(sid, read=not v)),
+    # After ``pinned``: settling clears a pin, so a combined {pinned, settled} PATCH ends settled + unpinned.
+    ("settled", lambda db, sid, v: db.set_session_settled(sid, v)),
 )
+
+
+def _cancel_pending_for_settle(db, sid: str, profile: Optional[str]) -> None:
+    """Settling dismisses the chat's open clarify/approval requests as cancelled (D28) on the in-process
+    gateway (``sys.modules`` guard, not an import: gateway never loaded means no live runtime to cancel)."""
+    gateway = sys.modules.get("tui_gateway.server")
+    if gateway is None:
+        return
+    keys = {sid}
+    with contextlib.suppress(Exception):
+        keys.add(db.get_compression_tip(sid) or sid)
+    try:
+        gateway.cancel_pending_for_settle(
+            keys, profile_home=gateway._profile_home(profile), any_profile=False)
+    except Exception:
+        _log.exception("settle: cancelling open requests for %s failed", sid)
 
 
 @manage_router.patch("/api/sessions/{session_id}")
@@ -815,7 +836,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         if body.title is None and all(getattr(body, f) is None for f in flags):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', and/or 'unread'.",
+                detail=("Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', 'unread', "
+                        "and/or 'settled'."),
             )
         if body.title is not None:
             try:
@@ -830,6 +852,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 setter(db, sid, value)
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""
+        if body.settled:
+            _cancel_pending_for_settle(db, sid, body.profile)
         return result
 
     return await asyncio.to_thread(_with_db, body.profile, _update, read_only=False)

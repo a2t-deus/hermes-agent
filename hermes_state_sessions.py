@@ -1027,6 +1027,16 @@ class SessionSessionsMixin:
         activity postdates it (no write on the message path). NULL = never tracked = read; 0 = unread."""
         return self._set_lineage_column("last_read_at", session_id, time.time() if read else 0.0)
 
+    def set_session_settled(self, session_id: str, settled: bool) -> bool:
+        """Settle/un-settle a session and its compression lineage. ``settled_at`` is the manual "finished
+        work" shelf (NULL = active), independent of archived/hidden; settling also clears ``pinned``
+        (a pin means "keep this in front"). New user/assistant activity clears it again
+        (``_unsettle_on_activity`` on the message-append paths)."""
+        result = self._set_lineage_column("settled_at", session_id, time.time() if settled else None)
+        if settled and result:
+            self._set_lineage_column("pinned", session_id, 0)
+        return result
+
     @staticmethod
     def session_unread(session_row: Dict[str, Any]) -> bool:
         """Unread = activity postdates the ``last_read_at`` watermark (NULL = read)."""

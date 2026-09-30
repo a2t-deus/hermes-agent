@@ -214,6 +214,7 @@ class SessionListParams(ProfileParams):
     title: str | None = None  # exact-title lookup (title as identity); windowless
     limit: int | None = None
     include_hidden: bool = False
+    include_settled: bool | None = None  # False drops settled chats; default keeps them (rows carry ``settled``)
 
 
 class SessionListRow(Result):
@@ -231,6 +232,7 @@ class SessionListRow(Result):
     pinned: bool = False
     hidden: bool = False
     archived: bool = False
+    settled: bool = False  # ``settled_at`` set: on the manual "finished work" shelf
     last_active: float = 0  # latest activity (``list_sessions_rich``); 0 when unknown
 
 
@@ -328,6 +330,25 @@ class SessionSetHiddenResult(Result):
 
 method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHiddenResult,
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
+
+
+class SessionSetSettledParams(Params):
+    """``session_id`` is a live runtime id first, else a stored id / key / title."""
+
+    session_id: str
+    settled: bool
+    profile: str | None = None
+
+
+class SessionSetSettledResult(Result):
+    settled: bool
+    session_key: str
+    cancelled_requests: int = 0  # open clarify/approval requests dismissed as cancelled by this settle
+
+
+method("session.set_settled", params=SessionSetSettledParams, result=SessionSetSettledResult,
+       doc="Settle/un-settle a chat + lineage (manual finished-work shelf); settling unpins it and "
+           "dismisses its open clarify/approval requests as cancelled.")
 
 
 class SessionArchiveParams(Params):

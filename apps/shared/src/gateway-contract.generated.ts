@@ -3117,6 +3117,7 @@ export interface SessionListParams {
   title?: string | null
   limit?: number | null
   include_hidden?: boolean
+  include_settled?: boolean | null
 }
 export interface SessionListResult {
   sessions: SessionListRow[]
@@ -3134,6 +3135,7 @@ export interface SessionListRow {
   pinned?: boolean
   hidden?: boolean
   archived?: boolean
+  settled?: boolean
   last_active?: number
 }
 export interface SessionMostRecentParams {
@@ -3193,6 +3195,17 @@ export interface SessionSetHiddenParams {
 export interface SessionSetHiddenResult {
   hidden: boolean
   session_key: string
+}
+/** ``session_id`` is a live runtime id first, else a stored id / key / title. */
+export interface SessionSetSettledParams {
+  session_id: string
+  settled: boolean
+  profile?: string | null
+}
+export interface SessionSetSettledResult {
+  settled: boolean
+  session_key: string
+  cancelled_requests?: number
 }
 /** ``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title. */
 export interface SessionArchiveParams {
@@ -5267,6 +5280,8 @@ export interface RpcMethods {
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
+  /** Settle/un-settle a chat + lineage (manual finished-work shelf); settling unpins it and dismisses its open clarify/approval requests as cancelled. */
+  'session.set_settled': { params: SessionSetSettledParams; result: SessionSetSettledResult }
   /** Rendered /status text for the session. */
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
@@ -5579,6 +5594,7 @@ export const RPC_METHODS = [
   'session.resume',
   'session.save',
   'session.set_hidden',
+  'session.set_settled',
   'session.status',
   'session.steer',
   'session.title',

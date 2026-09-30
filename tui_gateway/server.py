@@ -1493,6 +1493,39 @@ def _clear_pending(sid: str | None = None) -> None:
     server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
 
 
+SETTLED_CANCEL_CAUSE = "the chat was settled"
+
+
+def cancel_pending_for_settle(session_keys, *, profile_home=None, any_profile: bool = True, sids=()) -> int:
+    """Dismiss the open clarify/approval (and other server→client) requests of every live runtime of a
+    settled chat: the same withdrawal ``session.interrupt`` uses, reason ``settled``. Waiting tools see a
+    cancel, not an answer or deny (clarify outcome ``cancelled``, approval ``cancelled``), and the agent
+    continues. ``session_keys`` are the stored ids (lineage members) to match — in ``profile_home``'s store
+    unless ``any_profile``; ``sids`` are runtime ids already resolved by the caller. Returns the number of
+    withdrawn requests."""
+    profile_scope = _ANY_PROFILE if any_profile else profile_home
+    from tools import approval as _approval
+    from tui_gateway import server_requests
+    keys = {str(k) for k in session_keys if k}
+    targets: dict[str, str] = {}
+    with _sessions_lock:
+        for sid, session in list(_sessions.items()):
+            key = str(session.get("session_key") or "")
+            if sid in sids or (key in keys and not session.get("_finalized")
+                               and _live_profile_matches(session, profile_scope)):
+                targets[sid] = key
+    withdrawn = 0
+    for sid, key in targets.items():
+        # Approval queue first: the waiter wakes with our cause (a withdrawal, never a deny), and its
+        # settle hook retracts the approval card with ``request.cancel``.
+        for pending in _approval.list_gateway_approvals(key) if key else ():
+            if (rid := pending.get("request_id")) and _approval.withdraw_gateway_approval(
+                    key, rid, SETTLED_CANCEL_CAUSE):
+                withdrawn += 1
+        withdrawn += server_requests.cancel(sid, reason="settled")
+    return withdrawn
+
+
 # ── Agent factory ────────────────────────────────────────────────────
 
 
