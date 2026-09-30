@@ -2,8 +2,13 @@
 Schema, validation and a thin dispatcher; the UI lives in a platform-provided
 callback (cli.py, gateway/run.py, tui_gateway)."""
 
+import inspect
 import json
+import logging
+import uuid
 from typing import Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per call
@@ -33,6 +38,14 @@ def strip_recommended(text: str) -> str:
     return stripped
 
 
+def _accepts_kwarg(callback, name: str) -> bool:
+    """Signature-inspect (never a TypeError retry, which could re-prompt the user) whether
+    ``callback`` takes ``name`` or ``**kwargs``; non-introspectable callables are legacy."""
+    try:
+        params = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 def _clean_answer(raw, multi: bool):
     """Strip presentation (the label, multi-select JSON) from a locked answer: a multi-select
     answer is a list, a JSON array string, or one typed ("Other") answer."""
@@ -47,6 +60,63 @@ def _clean_answer(raw, multi: bool):
     return [strip_recommended(item) for item in raw if str(item).strip()]
 
 
+def _clarify_request_id(request_id: Optional[str] = None, *, server_request: bool = False) -> str:
+    supplied = str(request_id or "").strip()
+    if supplied:
+        return supplied
+    if server_request:
+        return f"srq-{uuid.uuid4().hex[:12]}"
+    return uuid.uuid4().hex
+
+
+def _uses_server_request_id(callback, platform: str) -> bool:
+    """The TUI/Desktop serve bridge uses this id as the JSON-RPC server-request frame id.
+
+    Other surfaces keep the hook-only uuid4 hex id promised by the hook contract.
+    """
+    return _accepts_kwarg(callback, "request_id") and (platform or "").lower() in {"serve", "desktop", "tui"}
+
+
+def _invoke_clarify_hook(hook_name: str, **kwargs) -> None:
+    """Best-effort clarify observer dispatch; observer failures never affect the tool."""
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        invoke_hook(hook_name, **kwargs)
+    except Exception as exc:
+        logger.debug("Clarify hook %s dispatch failed: %s", hook_name, exc)
+
+
+def _emit_pre_clarify(entry: dict, *, session_id: str, request_id: str, platform: str) -> None:
+    _invoke_clarify_hook(
+        "pre_clarify_request",
+        session_id=session_id or "",
+        request_id=request_id,
+        question=entry["question"],
+        choices=entry["choices_offered"],
+        multi_select=bool(entry["multi_select"]),
+        platform=platform or "",
+    )
+
+
+def _emit_post_clarify(entries: List[dict], *, session_id: str, request_id: str, platform: str, outcome: str) -> None:
+    for _entry in entries:
+        _invoke_clarify_hook(
+            "post_clarify_response",
+            session_id=session_id or "",
+            request_id=request_id,
+            outcome=outcome,
+            platform=platform or "",
+        )
+
+
+# Callback reply ``outcome`` -> the observer-hook vocabulary (stable for existing hook consumers).
+_HOOK_OUTCOMES = {"submitted": "answered", "timed_out": "timeout", "cancelled": "cancelled",
+                  "undelivered": "undelivered"}
+
+
+def _clarify_hook_outcome(reply) -> str:
+    outcome = reply.get("outcome") if isinstance(reply, dict) else None
+    return _HOOK_OUTCOMES.get(str(outcome or ""), "answered")
 def _normalize_questions(questions) -> tuple:
     """Validate ``questions`` -> ``(normalized, error)``. Entries carry ``qid`` (stable wire id
     ``q<index>`` surfaces key answers by), ``question``, decorated ``choices``, bare
@@ -108,18 +178,33 @@ def _result(normalized: List[dict], reply: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
+def clarify_tool(questions, callback: Optional[Callable] = None, *, session_id: str = "",
+                 request_id: Optional[str] = None, platform: str = "") -> str:
     """Ask 1-5 questions in one call. ``callback(questions) -> {"answers", "outcome", "notice"?}``
-    is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list."""
+    is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list;
+    callbacks that accept ``request_id`` also get the id the clarify observer hooks report."""
     normalized, error = _normalize_questions(questions)
     if error:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    request_id = _clarify_request_id(request_id, server_request=_uses_server_request_id(callback, platform))
+    for entry in normalized:
+        _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
+    outcome = "error"
     try:
-        return _result(normalized, callback(normalized))
+        if _accepts_kwarg(callback, "request_id"):
+            reply = callback(normalized, request_id=request_id)
+        else:
+            reply = callback(normalized)
+        result = _result(normalized, reply)
+        outcome = _clarify_hook_outcome(reply)
+        return result
     except Exception as exc:
+        outcome = "error"
         return tool_error(f"Failed to get user input: {exc}")
+    finally:
+        _emit_post_clarify(normalized, session_id=session_id, request_id=request_id, platform=platform, outcome=outcome)
 
 
 def check_clarify_requirements() -> bool:
@@ -189,7 +274,12 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(args.get("questions"), callback=kw.get("callback")),
+    handler=lambda args, **kw: clarify_tool(
+        args.get("questions"),
+        callback=kw.get("callback"),
+        session_id=kw.get("session_id") or kw.get("task_id") or "",
+        platform=kw.get("platform") or "",
+        request_id=kw.get("request_id")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

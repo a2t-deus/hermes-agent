@@ -250,6 +250,8 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
+        session_id=lambda agent, ctx: getattr(agent, "session_id", "") or ctx.effective_task_id or "",
+        platform=lambda agent, ctx: getattr(agent, "platform", "") or "",
     ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",

@@ -51,8 +51,9 @@ class ServerRequest:
                  "qids", "locked", "on_result", "declined")
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
-                 on_result: Callable[[dict | None], None] | None = None) -> None:
-        self.id = f"srq-{uuid.uuid4().hex[:12]}"
+                 on_result: Callable[[dict | None], None] | None = None,
+                 request_id: str | None = None) -> None:
+        self.id = str(request_id or "").strip() or f"srq-{uuid.uuid4().hex[:12]}"
         self.sid = sid
         self.method = method
         self.params = dict(params)
@@ -161,7 +162,7 @@ def _register(req: ServerRequest) -> None:
 
 
 def send(method: str, sid: str, params: dict, *, timeout: float | None,
-         qids: list[str] | None = None) -> dict | None:
+         qids: list[str] | None = None, request_id: str | None = None) -> dict | None:
     """Send one request and block for the response ``result`` (a dict).
 
     Returns ``None`` when the renderer never answered (timeout, cancel, or an error response — e.g.
@@ -171,7 +172,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     """
     if _unanswerable(method, sid):
         return None
-    req = ServerRequest(sid, method, params, qids=qids)
+    req = ServerRequest(sid, method, params, qids=qids, request_id=request_id)
     _register(req)
     try:
         req.event.wait(timeout)
