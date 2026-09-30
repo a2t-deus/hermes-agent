@@ -108,8 +108,21 @@ def _is_timeout(raw) -> bool:
     return raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE)
 
 
-def _clarify_request_id(request_id: Optional[str] = None) -> str:
-    return str(request_id or "").strip() or uuid.uuid4().hex
+def _clarify_request_id(request_id: Optional[str] = None, *, server_request: bool = False) -> str:
+    supplied = str(request_id or "").strip()
+    if supplied:
+        return supplied
+    if server_request:
+        return f"srq-{uuid.uuid4().hex[:12]}"
+    return uuid.uuid4().hex
+
+
+def _uses_server_request_id(callback, platform: str) -> bool:
+    """The TUI/Desktop serve bridge uses this id as the JSON-RPC server-request frame id.
+
+    Other surfaces keep the hook-only uuid4 hex id promised by the hook contract.
+    """
+    return _accepts_kwarg(callback, "request_id") and (platform or "").lower() in {"serve", "desktop", "tui"}
 
 
 def _invoke_clarify_hook(hook_name: str, **kwargs) -> None:
@@ -283,7 +296,7 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
         if normalized:
             if callback is None:
                 return tool_error(_UNAVAILABLE)
-            request_id = _clarify_request_id(request_id)
+            request_id = _clarify_request_id(request_id, server_request=_uses_server_request_id(callback, platform))
             for entry in normalized:
                 _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
             outcome = "error"
@@ -310,7 +323,7 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
         return tool_error(_UNAVAILABLE)
     # The bare list goes back to the agent; the "(Recommended)" label is presentation only.
     shown = mark_recommended(choices) if choices is not None else None
-    request_id = _clarify_request_id(request_id)
+    request_id = _clarify_request_id(request_id, server_request=_uses_server_request_id(callback, platform))
     entry = _single_entry(question, choices, multi_select)
     _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
     outcome = "error"
@@ -405,7 +418,8 @@ registry.register(
         questions=args.get("questions"),
         callback=kw.get("callback"),
         session_id=kw.get("session_id") or kw.get("task_id") or "",
-        platform=kw.get("platform") or ""),
+        platform=kw.get("platform") or "",
+        request_id=kw.get("request_id")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

@@ -131,11 +131,9 @@ def test_serve_clarify_block_uses_hook_request_id_as_ws_event_id(monkeypatch):
     cancellations = []
     monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 0)
     server_requests.reset_for_tests()
-    server_requests.bind_sinks(
-        lambda frame: frames.append(frame),
-        lambda event, sid, payload: cancellations.append((event, sid, payload)),
-        lambda sid: True,
-    )
+    monkeypatch.setattr(server_requests, "_write", lambda frame: frames.append(frame))
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancellations.append((event, sid, payload)))
+    monkeypatch.setattr(server_requests, "_answerable", lambda sid: True)
 
     def callback(question, choices, *, request_id=None, multi_select=False):
         return server._clarify_block("sid-1", question, choices, multi_select=multi_select, request_id=request_id)
@@ -152,3 +150,26 @@ def test_serve_clarify_block_uses_hook_request_id_as_ws_event_id(monkeypatch):
     assert frames[0]["id"] == "srq-test123"
     assert frames[0]["method"] == "clarify"
     assert cancellations == [("request.cancel", "sid-1", {"id": "srq-test123", "method": "clarify", "reason": "timeout"})]
+
+
+def test_serve_clarify_mints_server_request_id_for_hook_and_ws_event(monkeypatch):
+    from tui_gateway import server, server_requests
+
+    frames = []
+    seen = []
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 0)
+    server_requests.reset_for_tests()
+    monkeypatch.setattr(server_requests, "_write", lambda frame: frames.append(frame))
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+    monkeypatch.setattr(server_requests, "_answerable", lambda sid: True)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kwargs: seen.append((name, kwargs)))
+
+    def callback(question, choices, *, request_id=None, multi_select=False):
+        return server._clarify_block("sid-2", question, choices, multi_select=multi_select, request_id=request_id)
+
+    clarify_tool("Shape?", choices=["circle", "square"], callback=callback, session_id="durable-session", platform="serve")
+
+    pre_request_id = [kwargs["request_id"] for name, kwargs in seen if name == "pre_clarify_request"][0]
+    post_request_id = [kwargs["request_id"] for name, kwargs in seen if name == "post_clarify_response"][0]
+    assert pre_request_id == post_request_id == frames[0]["id"]
+    assert frames[0]["id"].startswith("srq-")
