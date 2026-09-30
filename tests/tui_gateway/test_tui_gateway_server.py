@@ -20997,11 +20997,15 @@ def _capture_server_request(monkeypatch, result):
     from tui_gateway import server_requests
     captured = {}
 
-    def fake_send(method, sid, params, *, timeout, qids=None):
-        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids)
+    def fake_send(method, sid, params, *, timeout, qids=None, request_id=None):
+        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids, request_id=request_id)
         return result
 
+    def fake_send_with_reason(method, sid, params, *, timeout, qids=None, request_id=None):
+        return fake_send(method, sid, params, timeout=timeout, qids=qids, request_id=request_id), "answered"
+
     monkeypatch.setattr(server_requests, "send", fake_send)
+    monkeypatch.setattr(server_requests, "send_with_reason", fake_send_with_reason)
     return captured
 
 

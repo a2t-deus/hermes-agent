@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 class ServerRequest:
     __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
-                 "qids", "locked", "on_result")
+                 "qids", "locked", "on_result", "settle_reason")
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
                  on_result: Callable[[dict | None], None] | None = None,
@@ -58,6 +58,7 @@ class ServerRequest:
         self.qids = list(qids) if qids else None
         self.locked: dict[str, str] = {}
         self.on_result = on_result
+        self.settle_reason: str | None = None
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
@@ -150,8 +151,18 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that times out
     returns ``{"answers": <locked so far>, "timed_out": True}`` instead of None.
     """
+    result, _reason = send_with_reason(method, sid, params, timeout=timeout, qids=qids, request_id=request_id)
+    return result
+
+
+def send_with_reason(method: str, sid: str, params: dict, *, timeout: float | None,
+                     qids: list[str] | None = None, request_id: str | None = None) -> tuple[dict | None, str]:
+    """Like :func:`send`, plus a settlement reason: ``answered``, ``timeout``, ``cancelled``,
+    ``error`` or ``unanswerable``. Existing callers keep using :func:`send`; clarify needs the
+    reason because a single-question timeout and user cancel both otherwise return ``None``/``""``.
+    """
     if _unanswerable(method, sid):
-        return None
+        return None, "unanswerable"
     req = ServerRequest(sid, method, params, qids=qids, request_id=request_id)
     _register(req)
     try:
@@ -163,6 +174,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
         with _lock:
             still_open = _open.pop(req.id, None) is req
         if still_open:
+            req.settle_reason = "interrupted"
             _emit_cancel(req, "interrupted")
         raise
     with _lock:
@@ -171,13 +183,15 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
         # settlement (resolve_response / lock_answer / cancel) already popped it (#112548).
         timed_out = _open.pop(req.id, None) is req
         answered, result, locked = req.answered, req.result, dict(req.locked)
+        reason = req.settle_reason
     if answered:
-        return result
+        return result, "answered"
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": locked, "timed_out": True}
-    return None
+            return {"answers": locked, "timed_out": True}, "timeout"
+        return None, "timeout"
+    return None, reason or "cancelled"
 
 
 def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | None], None]) -> Callable[[str], None]:
@@ -218,7 +232,7 @@ def resolve_response(frame: dict) -> bool:
         _open.pop(rid, None)
         if "error" in frame:
             logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
-            req.result, req.answered = None, False
+            req.result, req.answered, req.settle_reason = None, False, "error"
         else:
             result = frame.get("result")
             req.result = result if isinstance(result, dict) else {}
@@ -265,7 +279,7 @@ def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
             _open.pop(req.id, None)
-            req.result, req.answered = None, False
+            req.result, req.answered, req.settle_reason = None, False, reason
     for req in targets:
         if req.on_result is not None:
             req.on_result(None)

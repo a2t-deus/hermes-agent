@@ -1381,9 +1381,15 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None, request_i
         return json.dumps(result, ensure_ascii=False)
     params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
     if request_id is not None:
-        result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds(), request_id=request_id)
+        result, reason = server_requests.send_with_reason(
+            "clarify", sid, params, timeout=_clarify_timeout_seconds(), request_id=request_id)
     else:
-        result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
+        result, reason = server_requests.send_with_reason("clarify", sid, params, timeout=_clarify_timeout_seconds())
+    if reason == "timeout":
+        from tools.clarify_tool import TIMEOUT_RESPONSE
+        return TIMEOUT_RESPONSE
+    if reason == "error":
+        raise RuntimeError("Clarify request failed: client returned an error response")
     answer = (result or {}).get("answer", "")
     return answer if isinstance(answer, str) else ""
 
