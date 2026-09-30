@@ -319,6 +319,12 @@ def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
     every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
     answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
     owner can settle. Returns the number withdrawn."""
+    return len(withdraw(sid, reason))
+
+
+def withdraw(sid: str | None = None, reason: str = "interrupted") -> list[ServerRequest]:
+    """``cancel``, returning the withdrawn requests (callers that also withdrew their backing waits
+    de-duplicate by ``params``)."""
     with _lock:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
@@ -332,7 +338,7 @@ def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
             req.on_result(None)
         req.event.set()
         _emit_cancel(req, reason)
-    return len(targets)
+    return targets
 
 
 def open_requests(sid: str) -> list[dict]:

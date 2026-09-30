@@ -51,8 +51,13 @@ _BUMP_GENERATION_SQL = """
 
 # Roles whose arrival is "new activity" for the settled shelf; tool/system rows alone never un-settle.
 _UNSETTLING_ROLES = frozenset({"user", "assistant"})
-# Clears ``settled_at`` across the compression lineage (same walk as SessionDB._set_lineage_column).
-_UNSETTLE_LINEAGE_SQL = """
+# D28 amendment (isolated so it can be flipped): a settle STICKS against the turn that was already running
+# when the user settled — rows persisted by a turn whose durable turn lease was acquired before
+# ``settled_at`` leave the chat settled; a turn started after it (new user message, new agent turn,
+# delegation delivery) un-settles. False = any new user/assistant row un-settles.
+SETTLE_STICKS_ACROSS_RUNNING_TURN = True
+# The compression lineage of ``?`` (same walk as SessionDB._set_lineage_column), both directions.
+_SETTLE_LINEAGE_CTE = """
             WITH RECURSIVE
               ancestors(id) AS (
                 SELECT ? UNION
@@ -67,11 +72,15 @@ _UNSETTLE_LINEAGE_SQL = """
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
-              )
+              )"""
+_LINEAGE_IDS = "(SELECT id FROM ancestors UNION SELECT id FROM descendants)"
+# Latest settle anywhere in the lineage: a compression child minted before the copy existed starts NULL.
+_LINEAGE_SETTLED_AT_SQL = _SETTLE_LINEAGE_CTE + f"""
+            SELECT MAX(settled_at) FROM sessions WHERE id IN {_LINEAGE_IDS}"""
+_UNSETTLE_LINEAGE_SQL = _SETTLE_LINEAGE_CTE + f"""
             UPDATE sessions SET settled_at = NULL
-            WHERE settled_at IS NOT NULL
-              AND id IN (SELECT id FROM ancestors UNION SELECT id FROM descendants)
-            """
+            WHERE settled_at IS NOT NULL AND id IN {_LINEAGE_IDS}"""
+_TURN_LEASE_ACQUIRED_SQL = "SELECT acquired_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?"
 
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
@@ -401,15 +410,20 @@ class SessionMessagesMixin:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
-    @staticmethod
-    def _unsettle_on_activity(conn, session_id: str, roles) -> None:
-        """New user/assistant activity un-settles a settled chat (fleet-notifications D28). Runs inside the
-        append's write txn: one PK probe, and the lineage-wide clear only when ``settled_at`` is set."""
+    def _unsettle_on_activity(self, conn, session_id: str, roles, turn_lease_holder: Optional[str] = None) -> None:
+        """New user/assistant activity un-settles a settled chat lineage (fleet-notifications D28). Runs inside
+        the append's write txn; ``turn_lease_holder`` names the writing turn, whose durable lease
+        ``acquired_at`` is its start (see SETTLE_STICKS_ACROSS_RUNNING_TURN)."""
         if not any(role in _UNSETTLING_ROLES for role in roles):
             return
-        row = conn.execute("SELECT settled_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        if row is None or row[0] is None:
+        settled_at = conn.execute(_LINEAGE_SETTLED_AT_SQL, (session_id, session_id)).fetchone()[0]
+        if settled_at is None:
             return
+        if SETTLE_STICKS_ACROSS_RUNNING_TURN and turn_lease_holder:
+            lease = conn.execute(_TURN_LEASE_ACQUIRED_SQL, (
+                self._session_turn_lease_key_on_conn(conn, session_id), turn_lease_holder)).fetchone()
+            if lease is not None and float(lease[0]) < float(settled_at):
+                return
         conn.execute(_UNSETTLE_LINEAGE_SQL, (session_id, session_id))
 
     def append_message(
@@ -441,7 +455,7 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
-            self._unsettle_on_activity(conn, session_id, (role,))
+            self._unsettle_on_activity(conn, session_id, (role,), turn_lease_holder)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -478,6 +492,10 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
+            if msg["display_kind"] != "hidden":
+                # Delivered between client turns (the active-lease guard above): a new turn, never the one
+                # that was running at settle time.
+                self._unsettle_on_activity(conn, session_id, ("user",))
             return msg_id
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
@@ -516,7 +534,8 @@ class SessionMessagesMixin:
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             if inserted:
-                self._unsettle_on_activity(conn, session_id, (m.get("role") for m in inserted_rows))
+                self._unsettle_on_activity(conn, session_id, (m.get("role") for m in inserted_rows),
+                                           turn_lease_holder)
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

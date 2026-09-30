@@ -1518,11 +1518,14 @@ def cancel_pending_for_settle(session_keys, *, profile_home=None, any_profile: b
     for sid, key in targets.items():
         # Approval queue first: the waiter wakes with our cause (a withdrawal, never a deny), and its
         # settle hook retracts the approval card with ``request.cancel``.
-        for pending in _approval.list_gateway_approvals(key) if key else ():
-            if (rid := pending.get("request_id")) and _approval.withdraw_gateway_approval(
-                    key, rid, SETTLED_CANCEL_CAUSE):
-                withdrawn += 1
-        withdrawn += server_requests.cancel(sid, reason="settled")
+        approvals = {rid for pending in (_approval.list_gateway_approvals(key) if key else ())
+                     if (rid := pending.get("request_id"))
+                     and _approval.withdraw_gateway_approval(key, rid, SETTLED_CANCEL_CAUSE)}
+        # The card may still be open (its settle hook runs on the waiter thread): withdrawn here too, but
+        # counted once, as the approval.
+        withdrawn += len(approvals) + sum(
+            1 for req in server_requests.withdraw(sid, reason="settled")
+            if not (req.method == "approval" and req.params.get("request_id") in approvals))
     return withdrawn
 
 

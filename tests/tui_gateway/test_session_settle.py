@@ -115,6 +115,70 @@ def test_new_message_on_compression_tip_unsettles_the_lineage(db):
     assert _settled_at(db, "tip") is None
 
 
+def test_assistant_on_compression_tip_unsettles_a_root_settled_before_compression(db):
+    """Settle the root, compress, then the tip speaks: the whole lineage (and session.list) is active."""
+    _seed(db, "root")
+    db.set_session_settled("root", True)
+    db.publish_compression_child(
+        parent_session_id="root", child_session_id="tip", source="desktop",
+        messages=[{"role": "user", "content": "[CONTEXT COMPACTION] summary"}], require_compression_lease=False)
+    assert _settled_at(db, "tip") == _settled_at(db, "root")  # the child inherits the lineage state
+
+    db.append_message("tip", "assistant", "still going")
+    assert _settled_at(db, "root") is None and _settled_at(db, "tip") is None
+    rows = _call("session.list", {})["result"]["sessions"]
+    assert rows and not any(r["settled"] for r in rows)
+
+
+def test_unsettle_reads_the_whole_lineage(db):
+    """A lineage member minted without the state (pre-copy compression child) still un-settles the lineage."""
+    _seed(db, "root")
+    db.end_session("root", "compression")
+    db.create_session("tip", source="desktop", parent_session_id="root")
+    db.set_session_settled("root", True)
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET settled_at = NULL WHERE id = 'tip'")
+        db._conn.commit()
+    db.append_message("tip", "assistant", "back")
+    assert _settled_at(db, "root") is None
+
+
+@pytest.mark.parametrize("suppressed, settled_after", [(False, False), (True, True)])
+def test_delegation_delivery_unsettles_unless_hidden(db, suppressed, settled_after):
+    _seed(db, "chat")
+    db.set_session_settled("chat", True)
+    db.append_delegation_delivery("chat", "result", {"delegation_id": "d1", "presentation_suppressed": suppressed})
+    assert (_settled_at(db, "chat") is not None) is settled_after
+
+
+def _settle_during_turn(db, holder: str) -> None:
+    _seed(db, "chat")
+    assert db.try_acquire_session_turn_lease("chat", holder)
+    time.sleep(0.01)  # the settle strictly postdates the lease's acquired_at
+    db.set_session_settled("chat", True)
+
+
+def test_settle_sticks_against_the_turn_running_at_settle_time(db):
+    _settle_during_turn(db, "turn-a")
+    db.append_message("chat", "assistant", "late reply", turn_lease_holder="turn-a")
+    db.append_messages_batch("chat", [{"role": "assistant", "content": "more"}], turn_lease_holder="turn-a")
+    assert _settled_at(db, "chat") is not None
+
+    db.release_session_turn_lease("chat", "turn-a")
+    assert db.try_acquire_session_turn_lease("chat", "turn-b")  # a turn started after the settle
+    db.append_message("chat", "assistant", "new turn", turn_lease_holder="turn-b")
+    assert _settled_at(db, "chat") is None
+
+
+def test_running_turn_unsettles_when_the_stick_rule_is_off(db, monkeypatch):
+    import hermes_state_messages
+
+    monkeypatch.setattr(hermes_state_messages, "SETTLE_STICKS_ACROSS_RUNNING_TURN", False)
+    _settle_during_turn(db, "turn-a")
+    db.append_message("chat", "assistant", "late reply", turn_lease_holder="turn-a")
+    assert _settled_at(db, "chat") is None
+
+
 def test_tool_row_alone_does_not_unsettle(db):
     _seed(db, "chat")
     db.set_session_settled("chat", True)
@@ -146,6 +210,15 @@ def test_session_list_contract_accepts_the_settled_field_and_filter(db):
     assert resp["result"]["sessions"][0]["settled"] is True
 
 
+def test_session_list_include_settled_false_through_handle_request(db):
+    _seed(db, "active-chat")
+    _seed(db, "settled-chat")
+    db.set_session_settled("settled-chat", True)
+    resp = srv.handle_request({"id": "1", "method": "session.list", "params": {"include_settled": False}})
+    assert "error" not in resp, resp
+    assert {r["id"] for r in resp["result"]["sessions"]} == {"active-chat"}
+
+
 # ── session.set_settled RPC ─────────────────────────────────────────────────────────────────
 
 
@@ -170,7 +243,7 @@ def test_set_settled_rpc_requires_flag_and_known_id(db):
     assert resp["error"]["code"] == 4021  # settled is required (a default would settle on a dropped flag)
     resp = srv.handle_request(
         {"id": "2", "method": "session.set_settled", "params": {"session_id": "nope", "settled": True}})
-    assert resp.get("error"), resp
+    assert resp["error"]["code"] == 4001, resp
 
 
 # ── settle cancels open requests ────────────────────────────────────────────────────────────
@@ -231,7 +304,7 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
     finally:
         srv._sessions.pop(sid, None)
         with server_requests._lock:
-            server_requests._open.clear()
+            server_requests._open.pop(req.id, None)  # only ours: the map is process-global
 
     assert json.loads(box["result"])["user_response"] == ""  # dismissed, the agent continues
     post = [kw for name, kw in recorder.calls if name == "post_clarify_response"]
@@ -272,6 +345,74 @@ def test_settle_withdraws_pending_gateway_approval(db, monkeypatch):
     assert decision.get("cancelled")
     assert "settled" in decision["cancelled"]
     assert not _approval.list_gateway_approvals("appr-key")
+
+
+def test_settle_counts_an_approval_with_an_open_card_once(db, monkeypatch):
+    """The approval's card (an open ``approval`` server request) is withdrawn too, but counted once."""
+    from tools import approval as _approval
+    from tui_gateway import server_requests
+
+    _seed(db, "appr-key")
+    sid = "live-appr-card"
+    srv._sessions[sid] = {"session_key": "appr-key", "history": [], "running": True}
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+    monkeypatch.setattr(_approval, "_get_approval_config", lambda: {"gateway_timeout": 30}, raising=False)
+    thread = threading.Thread(target=lambda: _approval._await_gateway_decision(
+        "appr-key", lambda data: None, {"command": "rm -rf /tmp/x", "description": "d"}, surface="gateway"),
+        daemon=True)
+    card = None
+    try:
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not _approval.list_gateway_approvals("appr-key"):
+            time.sleep(0.01)
+        [pending] = _approval.list_gateway_approvals("appr-key")
+        card = server_requests.ServerRequest(sid, "approval", {"request_id": pending["request_id"]})
+        other = server_requests.ServerRequest(sid, "clarify", {"question": "q", "choices": None})
+        with server_requests._lock:
+            server_requests._open[card.id] = card
+            server_requests._open[other.id] = other
+        envelope = _call("session.set_settled", {"session_id": sid, "settled": True})
+        assert "error" not in envelope, envelope
+        assert envelope["result"]["cancelled_requests"] == 2  # the approval + the clarify
+        thread.join(5)
+    finally:
+        srv._sessions.pop(sid, None)
+        _approval.clear_session("appr-key")
+        with server_requests._lock:
+            for req in (card, locals().get("other")):
+                if req is not None:
+                    server_requests._open.pop(req.id, None)
+    assert card.settle_reason == "settled"
+
+
+def test_set_settled_live_id_respects_the_requested_profile(db, monkeypatch, tmp_path):
+    """An explicit ``profile`` never reaches another profile's live runtime (no settle, no cancel)."""
+    from tui_gateway import server_requests
+
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+    monkeypatch.setattr(srv, "_profile_home", lambda profile: other_home if profile == "other" else None)
+    _seed(db, "launch-key")
+    sid = "live-launch"  # a launch-profile runtime (no profile_home)
+    srv._sessions[sid] = {"session_key": "launch-key", "history": [], "running": True}
+    req = server_requests.ServerRequest(sid, "clarify", {"question": "q", "choices": None})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    try:
+        resp = _call("session.set_settled", {"session_id": sid, "settled": True, "profile": "other"})
+        assert resp["error"]["code"] == 4001, resp  # the runtime id is no stored id in profile "other"
+        assert not req.event.is_set()
+        assert _settled_at(db, "launch-key") is None
+
+        resp = _call("session.set_settled", {"session_id": sid, "settled": True})  # its own profile
+        assert "error" not in resp, resp
+        assert resp["result"]["cancelled_requests"] == 1
+    finally:
+        srv._sessions.pop(sid, None)
+        with server_requests._lock:
+            server_requests._open.pop(req.id, None)
 
 
 # ── PATCH /api/sessions/{id} ────────────────────────────────────────────────────────────────
@@ -333,6 +474,11 @@ class TestSettledRestFlag:
                 server_requests._open.pop(req.id, None)
         assert req.event.is_set() and req.settle_reason == "settled"
         assert {"id": req.id, "method": "clarify", "reason": "settled"} in cancels
+
+    def test_patch_settled_does_not_start_multi_profile_hosting(self, monkeypatch):
+        monkeypatch.setattr(srv, "_profile_home", lambda profile: pytest.fail("mutating profile resolver"))
+        resp = self.client.patch("/api/sessions/s1", json={"settled": True})
+        assert resp.status_code == 200, resp.text
 
     def test_patch_settled_false_unsettles(self):
         self.client.patch("/api/sessions/s1", json={"settled": True})
