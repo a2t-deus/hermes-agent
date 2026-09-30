@@ -147,6 +147,7 @@ VALID_HOOKS: Set[str] = {
     # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
     "pre_approval_request", "post_approval_response",
     # Clarify observers (tools/clarify_tool.py); returns ignored — plugins cannot answer or veto.
+    # These hooks run synchronously on the agent thread, so observers must return fast.
     # Kwargs: session_id, request_id, question, choices, multi_select, platform;
     # post_clarify_response adds outcome ("answered"|"timeout"|"cancelled"|"undelivered"|"error") and never answer text.
     "pre_clarify_request", "post_clarify_response",
