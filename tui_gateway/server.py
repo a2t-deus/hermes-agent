@@ -1360,7 +1360,7 @@ def _clarify_timeout_seconds() -> float | None:
     return 300
 
 
-def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
+def _clarify_block(sid: str, q, c, multi_select=False, questions=None, request_id: str | None = None) -> str:
     """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
     ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
     result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
@@ -1369,13 +1369,21 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
+        qids = [e["qid"] for e in questions]
+        if request_id is not None:
+            result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                          qids=qids, request_id=request_id)
+        else:
+            result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                          qids=qids)
         if not result or "answers" not in result:
             return ""
         return json.dumps(result, ensure_ascii=False)
     params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
+    if request_id is not None:
+        result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds(), request_id=request_id)
+    else:
+        result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
     answer = (result or {}).get("answer", "")
     return answer if isinstance(answer, str) else ""
 

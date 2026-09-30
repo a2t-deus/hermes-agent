@@ -146,6 +146,10 @@ VALID_HOOKS: Set[str] = {
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
     # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
     "pre_approval_request", "post_approval_response",
+    # Clarify observers (tools/clarify_tool.py); returns ignored — plugins cannot answer or veto.
+    # Kwargs: session_id, request_id, question, choices, multi_select, platform;
+    # post_clarify_response adds outcome ("answered"|"timeout"|"cancelled"|"error") and never answer text.
+    "pre_clarify_request", "post_clarify_response",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

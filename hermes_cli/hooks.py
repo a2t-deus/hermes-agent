@@ -118,6 +118,13 @@ _DEFAULT_PAYLOADS = {
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
+    "pre_clarify_request": {
+        "session_id": "test-session", "request_id": "test-request", "question": "Proceed?",
+        "choices": ["Yes", "No"], "multi_select": False, "platform": "cli",
+    },
+    "post_clarify_response": {
+        "session_id": "test-session", "request_id": "test-request", "outcome": "answered", "platform": "cli",
+    },
     "pre_verify": {
         "session_id": "test-session", "platform": "cli", "model": "gpt-4", "coding": True,
         "attempt": 0, "final_response": "All done — the change is applied.",

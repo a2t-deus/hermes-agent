@@ -4,7 +4,11 @@ callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import inspect
 import json
+import logging
+import uuid
 from typing import Dict, List, Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per batch call
@@ -59,11 +63,14 @@ def _accepts_kwarg(callback, name: str) -> bool:
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-def _invoke_callback(callback, question, choices, multi_select):
-    """Invoke the platform callback, passing multi_select if supported."""
+def _invoke_callback(callback, question, choices, multi_select, request_id: str = ""):
+    """Invoke the platform callback, passing supported additive kwargs."""
+    kwargs = {}
     if _accepts_kwarg(callback, "multi_select"):
-        return callback(question, choices, multi_select=multi_select)
-    return callback(question, choices)
+        kwargs["multi_select"] = multi_select
+    if request_id and _accepts_kwarg(callback, "request_id"):
+        kwargs["request_id"] = request_id
+    return callback(question, choices, **kwargs)
 
 
 def _json_as(raw: str, kind):
@@ -99,6 +106,69 @@ def _clean_choices(choices: list) -> Optional[List[str]]:
 
 def _is_timeout(raw) -> bool:
     return raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE)
+
+
+def _clarify_request_id(request_id: Optional[str] = None) -> str:
+    return str(request_id or "").strip() or uuid.uuid4().hex
+
+
+def _invoke_clarify_hook(hook_name: str, **kwargs) -> None:
+    """Best-effort clarify observer dispatch; observer failures never affect the tool."""
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        invoke_hook(hook_name, **kwargs)
+    except Exception as exc:
+        logger.debug("Clarify hook %s dispatch failed: %s", hook_name, exc)
+
+
+def _emit_pre_clarify(entry: dict, *, session_id: str, request_id: str, platform: str) -> None:
+    _invoke_clarify_hook(
+        "pre_clarify_request",
+        session_id=session_id or "",
+        request_id=request_id,
+        question=entry["question"],
+        choices=entry["choices_offered"],
+        multi_select=bool(entry["multi_select"]),
+        platform=platform or "",
+    )
+
+
+def _emit_post_clarify(entries: List[dict], *, session_id: str, request_id: str, platform: str, outcome: str) -> None:
+    for _entry in entries:
+        _invoke_clarify_hook(
+            "post_clarify_response",
+            session_id=session_id or "",
+            request_id=request_id,
+            outcome=outcome,
+            platform=platform or "",
+        )
+
+
+def _single_entry(question: str, choices: Optional[List[str]], multi_select: bool) -> dict:
+    return {"question": question, "choices_offered": choices, "multi_select": bool(multi_select and choices is not None)}
+
+
+def _clarify_outcome_from_raw(raw_response) -> str:
+    if _is_timeout(raw_response):
+        return "timeout"
+    if isinstance(raw_response, str) and raw_response == "":
+        return "cancelled"
+    return "answered"
+
+
+def _clarify_outcome_from_batch_result(result: str) -> str:
+    try:
+        parsed = json.loads(result)
+    except Exception:
+        return "answered"
+    if not isinstance(parsed, dict):
+        return "answered"
+    if parsed.get("timed_out"):
+        return "timeout"
+    responses = parsed.get("responses")
+    if isinstance(responses, list) and responses and all(not item.get("user_response") for item in responses if isinstance(item, dict)):
+        return "cancelled"
+    return "answered"
 
 
 # ============================================================================= Batch (multi-question)
@@ -156,7 +226,7 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, notice
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_batch(normalized: List[dict], callback, question: str) -> str:
+def _run_batch(normalized: List[dict], callback, question: str, *, request_id: str) -> str:
     """Dispatch a validated batch. Batch-capable callbacks (``questions`` kwarg) get the
     whole list once and reply ``{"answers": {qid: raw}, "timed_out"?}`` as a dict or JSON
     string (the tui_gateway bridge only carries strings); any other falsy/unparseable reply
@@ -167,7 +237,10 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
     timed_out = False
     notice = None
     if _accepts_kwarg(callback, "questions"):
-        raw = callback(question, None, questions=normalized)
+        kwargs: dict[str, object] = {"questions": normalized}
+        if request_id and _accepts_kwarg(callback, "request_id"):
+            kwargs["request_id"] = request_id
+        raw = callback(question, None, **kwargs)
         timed_out = _is_timeout(raw)
         if isinstance(raw, str):
             raw = _json_as(raw, dict)  # the sentinel is not JSON -> None, timed_out stays True
@@ -177,7 +250,7 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
             notice = raw.get("notice")
         return _batch_result(normalized, answers, timed_out, notice)
     for entry in normalized:
-        raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"])
+        raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"], request_id=request_id)
         if _is_timeout(raw):
             timed_out = True
             break
@@ -186,7 +259,8 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
 
 
 def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_select: bool = False,
-                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None) -> str:
+                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None,
+                 session_id: str = "", request_id: Optional[str] = None, platform: str = "") -> str:
     """Ask one question (``question``/``choices``/``multi_select``) or a batch (``questions``
     wins when non-empty). ``callback(question, choices, multi_select=False) -> str`` is
     platform injected (batch-capable ones also take ``questions=``). Returns result JSON.
@@ -209,10 +283,19 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
         if normalized:
             if callback is None:
                 return tool_error(_UNAVAILABLE)
+            request_id = _clarify_request_id(request_id)
+            for entry in normalized:
+                _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
+            outcome = "error"
             try:
-                return _run_batch(normalized, callback, str(question or "").strip())
+                result = _run_batch(normalized, callback, str(question or "").strip(), request_id=request_id)
+                outcome = _clarify_outcome_from_batch_result(result)
+                return result
             except Exception as exc:
+                outcome = "error"
                 return tool_error(f"Failed to get user input: {exc}")
+            finally:
+                _emit_post_clarify(normalized, session_id=session_id, request_id=request_id, platform=platform, outcome=outcome)
         # Empty questions array → fall through to the single-question path.
     if not question or not question.strip():
         return tool_error("No question provided. Pass questions=[{question: '...', "
@@ -227,10 +310,18 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
         return tool_error(_UNAVAILABLE)
     # The bare list goes back to the agent; the "(Recommended)" label is presentation only.
     shown = mark_recommended(choices) if choices is not None else None
+    request_id = _clarify_request_id(request_id)
+    entry = _single_entry(question, choices, multi_select)
+    _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
+    outcome = "error"
     try:
-        raw_response = _invoke_callback(callback, question, shown, multi_select)
+        raw_response = _invoke_callback(callback, question, shown, multi_select, request_id=request_id)
+        outcome = _clarify_outcome_from_raw(raw_response)
     except Exception as exc:
+        outcome = "error"
         return tool_error(f"Failed to get user input: {exc}")
+    finally:
+        _emit_post_clarify([entry], session_id=session_id, request_id=request_id, platform=platform, outcome=outcome)
     return json.dumps({"question": question, "choices_offered": choices,
                        "user_response": _clean_answer(raw_response, multi_select and choices is not None)},
                       ensure_ascii=False)
@@ -312,7 +403,9 @@ registry.register(
         choices=args.get("choices"),
         multi_select=args.get("multi_select", False),
         questions=args.get("questions"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        session_id=kw.get("session_id") or kw.get("task_id") or "",
+        platform=kw.get("platform") or ""),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )
