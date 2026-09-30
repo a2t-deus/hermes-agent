@@ -157,11 +157,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                        if e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
     if leader is not None and not preparing_terminal_approval():
+        # A follower reports the leader's queue id: that is the prompt a client answers.
+        payload["request_id"] = leader.data["request_id"]
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
 
     entry = _ApprovalEntry(approval_data)
+    # The queue id a client answers with (``approval.respond`` / the server→client ``approval`` request),
+    # so hook observers can route an answer back to this exact prompt.
+    payload["request_id"] = entry.data["request_id"]
     with _approval._lock:
         register_prepared_approval(session_key, entry)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
