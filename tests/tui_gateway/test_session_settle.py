@@ -170,6 +170,19 @@ def test_settle_sticks_against_the_turn_running_at_settle_time(db):
     assert _settled_at(db, "chat") is None
 
 
+@pytest.mark.parametrize("batch", [False, True])
+def test_user_row_inside_the_running_turn_unsettles(db, batch):
+    """The stick rule spares only the running turn's own output: a ``/steer`` (user row saved under that
+    turn's lease) is new user activity."""
+    _settle_during_turn(db, "turn-a")
+    if batch:
+        db.append_messages_batch("chat", [{"role": "assistant", "content": "partial"},
+                                          {"role": "user", "content": "steer"}], turn_lease_holder="turn-a")
+    else:
+        db.append_message("chat", "user", "steer", turn_lease_holder="turn-a")
+    assert _settled_at(db, "chat") is None
+
+
 def test_running_turn_unsettles_when_the_stick_rule_is_off(db, monkeypatch):
     import hermes_state_messages
 
@@ -474,6 +487,28 @@ class TestSettledRestFlag:
                 server_requests._open.pop(req.id, None)
         assert req.event.is_set() and req.settle_reason == "settled"
         assert {"id": req.id, "method": "clarify", "reason": "settled"} in cancels
+
+    def test_patch_settled_default_profile_on_custom_home_cancels_launch_requests(self, monkeypatch):
+        """Custom launch HERMES_HOME (the hermetic home is outside the platform default): an explicit
+        ``profile=default`` names this process's own store, so its live runtime is still cancelled."""
+        from hermes_constants import get_hermes_home
+        from tui_gateway import server_requests
+
+        monkeypatch.setattr(srv, "_hermes_home", get_hermes_home())
+        monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+        srv._sessions["live-s1"] = {"session_key": "s1", "history": [], "running": True}
+        req = server_requests.ServerRequest("live-s1", "clarify", {"question": "q", "choices": None})
+        with server_requests._lock:
+            server_requests._open[req.id] = req
+        try:
+            resp = self.client.patch("/api/sessions/s1", json={"settled": True, "profile": "default"})
+            assert resp.status_code == 200, resp.text
+        finally:
+            srv._sessions.pop("live-s1", None)
+            with server_requests._lock:
+                server_requests._open.pop(req.id, None)
+        assert self._row()["settled_at"] is not None
+        assert req.event.is_set() and req.settle_reason == "settled"
 
     def test_patch_settled_does_not_start_multi_profile_hosting(self, monkeypatch):
         monkeypatch.setattr(srv, "_profile_home", lambda profile: pytest.fail("mutating profile resolver"))

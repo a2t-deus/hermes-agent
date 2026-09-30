@@ -52,9 +52,10 @@ _BUMP_GENERATION_SQL = """
 # Roles whose arrival is "new activity" for the settled shelf; tool/system rows alone never un-settle.
 _UNSETTLING_ROLES = frozenset({"user", "assistant"})
 # D28 amendment (isolated so it can be flipped): a settle STICKS against the turn that was already running
-# when the user settled — rows persisted by a turn whose durable turn lease was acquired before
-# ``settled_at`` leave the chat settled; a turn started after it (new user message, new agent turn,
-# delegation delivery) un-settles. False = any new user/assistant row un-settles.
+# when the user settled — assistant rows persisted by a turn whose durable turn lease was acquired before
+# ``settled_at`` leave the chat settled; a turn started after it (new agent turn, delegation delivery)
+# un-settles. A USER row always un-settles, even inside that turn (``/steer``, queued follow-up).
+# False = any new user/assistant row un-settles.
 SETTLE_STICKS_ACROSS_RUNNING_TURN = True
 # The compression lineage of ``?`` (same walk as SessionDB._set_lineage_column), both directions.
 _SETTLE_LINEAGE_CTE = """
@@ -414,12 +415,13 @@ class SessionMessagesMixin:
         """New user/assistant activity un-settles a settled chat lineage (fleet-notifications D28). Runs inside
         the append's write txn; ``turn_lease_holder`` names the writing turn, whose durable lease
         ``acquired_at`` is its start (see SETTLE_STICKS_ACROSS_RUNNING_TURN)."""
-        if not any(role in _UNSETTLING_ROLES for role in roles):
+        roles = set(roles)
+        if not roles & _UNSETTLING_ROLES:
             return
         settled_at = conn.execute(_LINEAGE_SETTLED_AT_SQL, (session_id, session_id)).fetchone()[0]
         if settled_at is None:
             return
-        if SETTLE_STICKS_ACROSS_RUNNING_TURN and turn_lease_holder:
+        if SETTLE_STICKS_ACROSS_RUNNING_TURN and turn_lease_holder and "user" not in roles:
             lease = conn.execute(_TURN_LEASE_ACQUIRED_SQL, (
                 self._session_turn_lease_key_on_conn(conn, session_id), turn_lease_holder)).fetchone()
             if lease is not None and float(lease[0]) < float(settled_at):
