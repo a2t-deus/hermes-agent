@@ -49,6 +49,30 @@ _BUMP_GENERATION_SQL = """
                 SET generation = conversation_generations.generation + 1
             """
 
+# Roles whose arrival is "new activity" for the settled shelf; tool/system rows alone never un-settle.
+_UNSETTLING_ROLES = frozenset({"user", "assistant"})
+# Clears ``settled_at`` across the compression lineage (same walk as SessionDB._set_lineage_column).
+_UNSETTLE_LINEAGE_SQL = """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ? UNION
+                SELECT parent.id FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ? UNION
+                SELECT child.id FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              )
+            UPDATE sessions SET settled_at = NULL
+            WHERE settled_at IS NOT NULL
+              AND id IN (SELECT id FROM ancestors UNION SELECT id FROM descendants)
+            """
+
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
@@ -377,6 +401,17 @@ class SessionMessagesMixin:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
+    @staticmethod
+    def _unsettle_on_activity(conn, session_id: str, roles) -> None:
+        """New user/assistant activity un-settles a settled chat (fleet-notifications D28). Runs inside the
+        append's write txn: one PK probe, and the lineage-wide clear only when ``settled_at`` is set."""
+        if not any(role in _UNSETTLING_ROLES for role in roles):
+            return
+        row = conn.execute("SELECT settled_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is None or row[0] is None:
+            return
+        conn.execute(_UNSETTLE_LINEAGE_SQL, (session_id, session_id))
+
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
@@ -406,6 +441,7 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            self._unsettle_on_activity(conn, session_id, (role,))
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -479,6 +515,8 @@ class SessionMessagesMixin:
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            if inserted:
+                self._unsettle_on_activity(conn, session_id, (m.get("role") for m in inserted_rows))
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

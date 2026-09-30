@@ -123,6 +123,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
             "source": row.get("source") or "", "pinned": bool(row.get("pinned")),
             "hidden": bool(row.get("hidden")), "archived": bool(row.get("archived")),
+            "settled": row.get("settled_at") is not None,
             "last_active": row.get("last_active") or 0}
 
 
@@ -540,8 +541,10 @@ def _(rid, params: dict, db) -> dict:
         db_path = getattr(db, "db_path", None)
         include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=include_subagents)[:limit]
-        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
+                             include_subagents=include_subagents)
+        if params.get("include_settled") is not None and not _flag(params, "include_settled"):
+            rows = [row for row in rows if row.get("settled_at") is None]
+        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows[:limit]]})
     except Exception as e:
         return _err(rid, 5006, str(e))
 
@@ -1227,6 +1230,44 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
+
+
+@method("session.set_settled")
+def _(rid, params: dict) -> dict:
+    """Settle/un-settle a chat + lineage (fleet-notifications D28): the manual "finished work" shelf.
+    LIVE runtime id first, else a stored id / key / title in the profile db. Settling clears a pin and
+    dismisses the chat's open clarify/approval requests as cancelled (the agent continues)."""
+    if "settled" not in params:
+        return _err(rid, 4021, "settled required")
+    settled = is_truthy_value(params["settled"])
+    target = _str_param(params, "session_id")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    session = _sessions.get(target)
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            if session is not None:
+                key = session["session_key"]
+            elif not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
+                return _err(rid, 4001, "session not found")
+            if not db.set_session_settled(key, settled):
+                return _err(rid, 4001, "session not found")
+            keys = {key}
+            with contextlib.suppress(Exception):
+                keys.add(db.get_compression_tip(key) or key)
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+    cancelled = 0
+    if settled:
+        if session is not None:
+            cancelled = cancel_pending_for_settle(keys, profile_home=session.get("profile_home") or None,
+                                                  any_profile=False, sids=(target,))
+        else:
+            cancelled = cancel_pending_for_settle(
+                keys, profile_home=_profile_home(params.get("profile")), any_profile=False)
+    return _ok(rid, {"settled": settled, "session_key": key, "cancelled_requests": cancelled})
 
 
 @_session_method("message.react")

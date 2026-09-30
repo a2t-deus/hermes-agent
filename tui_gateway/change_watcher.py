@@ -126,7 +126,7 @@ _SESSION_SIGNATURE_FIELDS = (
     "id", "source", "session_key", "display_name", "model", "parent_session_id",
     "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
     "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
-    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
+    "archived", "pinned", "hidden", "last_read_at", "settled_at", "handoff_state",
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process

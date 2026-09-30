@@ -3481,6 +3481,24 @@
       }
     },
     {
+      "name": "session.set_settled",
+      "summary": "Settle/un-settle a chat + lineage (manual finished-work shelf); settling unpins it and dismisses its open clarify/approval requests as cancelled.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionSetSettledParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionSetSettledResult"
+        }
+      }
+    },
+    {
       "name": "session.status",
       "summary": "Rendered /status text for the session.",
       "params": [
@@ -30450,6 +30468,18 @@
             "default": false,
             "title": "Include Hidden",
             "type": "boolean"
+          },
+          "include_settled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Settled"
           }
         },
         "title": "SessionListParams",
@@ -30530,6 +30560,11 @@
           "archived": {
             "default": false,
             "title": "Archived",
+            "type": "boolean"
+          },
+          "settled": {
+            "default": false,
+            "title": "Settled",
             "type": "boolean"
           },
           "last_active": {
@@ -31371,6 +31406,62 @@
           "session_key"
         ],
         "title": "SessionSetHiddenResult",
+        "type": "object"
+      },
+      "SessionSetSettledParams": {
+        "additionalProperties": false,
+        "description": "``session_id`` is a live runtime id first, else a stored id / key / title.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "boolean"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "settled"
+        ],
+        "title": "SessionSetSettledParams",
+        "type": "object"
+      },
+      "SessionSetSettledResult": {
+        "additionalProperties": false,
+        "properties": {
+          "settled": {
+            "title": "Settled",
+            "type": "boolean"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "cancelled_requests": {
+            "default": 0,
+            "title": "Cancelled Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "settled",
+          "session_key"
+        ],
+        "title": "SessionSetSettledResult",
         "type": "object"
       },
       "SessionStatusParams": {

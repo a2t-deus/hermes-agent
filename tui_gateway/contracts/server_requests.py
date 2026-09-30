@@ -219,6 +219,7 @@ class RequestCancelReason(WireEnum):
     shutdown = "shutdown"
     resolved = "resolved"
     session_closed = "session_closed"
+    settled = "settled"
 
 
 class RequestCancelPayload(Payload):

@@ -265,6 +265,8 @@ class SessionRename(BaseModel):
     pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
     # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.
     unread: Optional[bool] = None
+    # Manual "finished work" shelf (sessions.settled_at): True settles (unpins, dismisses open asks).
+    settled: Optional[bool] = None
     profile: Optional[str] = None  # session owned by another profile (opens its state.db)
 
 class SessionOwnerBackfill(BaseModel):

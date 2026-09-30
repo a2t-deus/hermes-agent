@@ -420,6 +420,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
+    settled_at REAL,
     tool_names TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
