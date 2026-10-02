@@ -1,6 +1,5 @@
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 
-import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
 
 /**
  * `user.prompt` reaches every viewer of the session, the sender included.
