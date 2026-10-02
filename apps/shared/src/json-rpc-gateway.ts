@@ -147,6 +147,8 @@ export class JsonRpcGatewayClient {
    * silently believe nothing was missed.
    */
   private replayEpoch: string | null = null
+  /** WS close code of the last socket close (e.g. 1012 = server restart); null until a close lands. */
+  private closeCode: number | null = null
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
     Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
@@ -190,6 +192,10 @@ export class JsonRpcGatewayClient {
     return this.state
   }
 
+  get lastCloseCode(): number | null {
+    return this.closeCode
+  }
+
   async connect(wsUrl: string): Promise<void> {
     // Refuse garbage; WebSocket coerces non-strings into
     // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
@@ -207,6 +213,7 @@ export class JsonRpcGatewayClient {
       return
     }
 
+    this.closeCode = null
     this.setState('connecting')
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
@@ -230,6 +237,8 @@ export class JsonRpcGatewayClient {
       if (this.socket !== socket) {
         return
       }
+
+      this.closeCode = typeof event.code === 'number' ? event.code : null
 
       if (this.options.onSocketClose(event)) {
         return
@@ -354,6 +363,7 @@ export class JsonRpcGatewayClient {
    * outcome. The outer connection owner decides whether/when to reconnect.
    */
   invalidate(message = this.options.closedErrorMessage): void {
+    this.closeCode = null
     const socket = this.socket
 
     if (!socket) {

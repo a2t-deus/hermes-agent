@@ -17,8 +17,8 @@ messaging gateway drains instead; this mirrors its two shapes (gateway/restart.p
   budget is safe.
 
 A second SIGTERM while draining stops waiting and shuts down at once. Turns still running when
-the budget ends are stopped by the existing exit path, attributed ``serve_shutdown`` and resumed
-by auto-continue after the restart (tui_gateway/session_reaper.py, session_auto_continue.py).
+the budget ends are stopped by the existing exit path and attributed ``serve_shutdown``; they are
+NOT resumed after the restart. Clients announce the cut turn from the WS 1012 close.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def install_serve_drain(server) -> bool:
                 left = _wait_for_turns(budget_s, stop_early)
             finally:
                 logger.warning("serve %s: drain ended after %.1fs; %d turn(s) still running will be stopped "
-                               "(serve_shutdown) and auto-continued after restart",
+                               "(serve_shutdown) and NOT resumed; clients announce the cut turn from the 1012 close",
                                why, time.monotonic() - started, len(left))
                 finish()
 

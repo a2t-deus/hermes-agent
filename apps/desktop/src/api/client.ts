@@ -43,6 +43,56 @@ export class HermesGateway extends JsonRpcGatewayClient {
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
+
+    // Turns in flight on this socket, so a backend restart (WS close 1012) that
+    // cuts them can be announced. Nothing is resumed server-side.
+    const running = new Set<string>()
+    let lastReplayEpoch: string | null = null
+
+    this.on('message.start', event => {
+      if (event.session_id) {
+        running.add(event.session_id)
+      }
+    })
+
+    const settle = (event: { session_id?: string }) => {
+      if (event.session_id) {
+        running.delete(event.session_id)
+      }
+    }
+
+    this.on('message.complete', settle)
+    this.on('error', settle)
+    this.on('session.info', event => {
+      if (event.payload?.running === false) {
+        settle(event)
+      }
+    })
+    this.on('gateway.ready', event => {
+      const epoch = event.payload?.replay_epoch ?? null
+
+      if (epoch !== lastReplayEpoch) {
+        if (lastReplayEpoch !== null) {
+          running.clear()
+        }
+
+        lastReplayEpoch = epoch
+      }
+    })
+
+    this.onState(state => {
+      if (state !== 'closed' && state !== 'error') {
+        return
+      }
+
+      if (this.lastCloseCode !== 1012 || running.size === 0) {
+        return
+      }
+
+      const ids = [...running]
+      running.clear()
+      void import('@/store/service-restart-notice').then(m => m.notifyTurnsInterruptedByRestart(ids))
+    })
   }
 }
 

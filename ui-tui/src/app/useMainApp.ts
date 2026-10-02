@@ -230,6 +230,9 @@ export function useMainApp(gw: GatewayClient) {
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  // Read from the gateway exitHandler effect without re-subscribing it.
+  const bellOnCompleteRef = useRef(bellOnComplete)
+  bellOnCompleteRef.current = bellOnComplete
   const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
@@ -988,8 +991,22 @@ export function useMainApp(gw: GatewayClient) {
       // resumes the durable session id. Calling start() here would race that
       // reconnect and reset its backoff.
       if (gw.attached) {
+        const busy = state.busy
         recoverSidRef.current = storedSid ?? recoverSidRef.current
         patchUiState({ busy: false, compacting: false, sid: null, status: t('session.status.reconnecting') })
+
+        // 1012 = the serve backend restarted. A running turn was stopped and is
+        // NOT resumed after the restart — say so instead of a silent reconnect.
+        if (code === 1012 && busy) {
+          const notice = '⚠ Turn interrupted — Hermes restarted. Nothing was resumed; send "continue" to pick it up.'
+
+          turnController.pushActivity(notice, 'warn')
+          sys(notice)
+
+          if (bellOnCompleteRef.current && stdout?.isTTY) {
+            stdout.write('\x07')
+          }
+        }
 
         if (state.sid) {
           turnController.pushActivity(connectionLostActivity(), 'warn')

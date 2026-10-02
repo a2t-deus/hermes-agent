@@ -119,7 +119,8 @@ _EXIT_TURN_SETTLE_S = 0.5
 
 # Who stops turns on the way out. None = legacy attribution (a human stop; standalone ``hermes --tui``
 # exit). ``hermes serve`` sets "serve_shutdown" (hermes_cli/serve_drain.py): exit stops are then booked
-# ``interrupted_by_system(serve_shutdown)`` and keep their crash marker for auto-continue after restart.
+# ``interrupted_by_system(serve_shutdown)``; they are NOT resumed after restart (clients announce the
+# cut turn from the WS 1012 close).
 # A dict, not a bare str, so the value bind_module copies onto server.py stays one shared object.
 _serve_exit_state: dict = {"issuer": None}
 
@@ -145,9 +146,6 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
         running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
     threads = []
     for sid, session in running:
-        if issuer:
-            # Before the interrupt: the turn's own retire points read it (_retire_turn_marker).
-            session["_exit_stop_issuer"] = issuer
         with contextlib.suppress(Exception):
             _interrupt_session_turn(sid, session, stop_reason=issuer)
         if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
