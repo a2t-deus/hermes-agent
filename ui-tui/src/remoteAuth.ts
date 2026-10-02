@@ -185,10 +185,7 @@ const setCookieHeaders = (headers: Headers): string[] => {
  * Throws {@link RemoteAuthExpiredError} on 401 so the caller can stop reconnecting: retrying a
  * dead cookie set just burns backoff cycles and never recovers.
  */
-export const mintWsTicket = async (
-  remote: RemoteAttachConfig,
-  fetchImpl: typeof fetch = fetch
-): Promise<string> => {
+export const mintWsTicket = async (remote: RemoteAttachConfig, fetchImpl: typeof fetch = fetch): Promise<string> => {
   const jar = readCookieJar(remote.cookieFile)
   const cookie = cookieHeader(jar)
 

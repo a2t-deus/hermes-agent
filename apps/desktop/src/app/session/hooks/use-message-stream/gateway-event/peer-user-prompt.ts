@@ -1,6 +1,5 @@
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 
-
 /**
  * `user.prompt` reaches every viewer of the session, the sender included.
  * The sender already drew an optimistic bubble: it is the transcript's last

@@ -17,8 +17,8 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $connectionsRegistry, hasRegistryTopology } from '@/store/connection-registry-state'
+import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -2225,6 +2225,7 @@ export async function probeStoredSession(
         { connectionId, profile: 'default' },
         { timeoutMs: FOREIGN_OWNER_PROBE_TIMEOUT_MS }
       )
+
       session.connection_id = connectionId
       session.profile = 'default'
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
