@@ -134,6 +134,25 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
         _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
 
 
+def hold_turn_marker_for_resume(home: Path | str, session_key: str, stopped_by: str) -> None:
+    """Keep the marker of a turn a SYSTEM exit stopped (``serve_shutdown``) instead of clearing it, so the
+    next ``session.resume`` after the restart auto-continues it exactly like a crash. ``started_at`` moves
+    to now: the freshness window counts from the stop, not from a long turn's start. Attempts are kept,
+    so the crash-loop breaker still bounds a restart loop."""
+    if not session_key:
+        return
+    now = time.time()
+
+    def _mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
+        entry = entries.get(session_key)
+        if not isinstance(entry, dict):
+            return None
+        return {**entries, session_key: {**entry, "started_at": now, "stopped_by": str(stopped_by)}}
+
+    logger.info("turn marker held for auto-continue: session %s stopped by %s", session_key, stopped_by)
+    _update(home, session_key, _mutate, "hold")
+
+
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
     """The marker left by a turn that never concluded, or None."""
     if not session_key:
@@ -147,7 +166,7 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
                 "auto_continue": bool(entry.get("auto_continue", True)),
                 # Writer identity when present: extra keys only, so a marker written by an older build still reads.
-                **{k: entry[k] for k in ("writer_pid", "writer_start_time") if entry.get(k) is not None},
+                **{k: entry[k] for k in ("writer_pid", "writer_start_time", "stopped_by") if entry.get(k) is not None},
                 **({"notification_category": "diagnostic"}
                    if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:

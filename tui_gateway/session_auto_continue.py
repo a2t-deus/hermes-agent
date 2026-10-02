@@ -40,11 +40,19 @@ def _session_home(session: dict) -> Path:
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
-    cover a session_key that compression rotated mid-turn."""
+    cover a session_key that compression rotated mid-turn.
+
+    A turn the process exit stopped (``_exit_stop_issuer``, set by ``_stop_turns_before_exit`` under
+    ``hermes serve``) did not conclude: its marker is HELD, so the restarted backend auto-continues it on
+    the client's next ``session.resume`` (_maybe_schedule_auto_continue), the same path a crash takes."""
     home = _session_home(session)
+    held_by = session.get("_exit_stop_issuer")
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
-            clear_turn_marker(home, key)
+            if held_by:
+                hold_turn_marker_for_resume(home, key, held_by)
+            else:
+                clear_turn_marker(home, key)
 
 
 def _auto_continue_note(prompt: str) -> str:

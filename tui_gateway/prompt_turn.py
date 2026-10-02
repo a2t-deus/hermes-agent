@@ -205,7 +205,7 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
                              if notification_category == "diagnostic" else {}))
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
-        if marker_cancelled:
+        if marker_cancelled and not session.get("_exit_stop_issuer"):  # an exit stop resumes it
             clear_turn_marker(marker_home, marker_key)
     return marker_key
 
