@@ -14,6 +14,7 @@ function registryFor(source: RegistryConnection): ConnectionRegistry {
     version: 2,
     primary: source.id,
     launchMode: 'primary',
+    hideLocal: false,
     lastUsed: source.id,
     connections: [{ id: 'local', kind: 'local', label: 'This device' }, source]
   }
