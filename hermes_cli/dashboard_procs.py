@@ -542,7 +542,24 @@ def _wait_gone(pids: list[int], seconds: float) -> list[int]:
     return alive
 
 
-def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
+def _launchd_term_grace(pid_launchd: dict[int, tuple[str, str, int | None]]) -> float:
+    """Root SIGTERM grace for this stop: launchd-owned serve backends drain in-flight turns for up to
+    their job's live ``ExitTimeOut`` (hermes_cli/serve_drain.py), so the update must not SIGKILL them at
+    the generic 10s. Bounded: the gui domain clamps ExitTimeOut to 60s."""
+    grace = _POSIX_TERM_GRACE_SECONDS
+    try:
+        from gateway.restart import read_launchd_exit_timeout_s
+        for _domain, label, _pid in pid_launchd.values():
+            timeout = read_launchd_exit_timeout_s(label)
+            if timeout:
+                grace = max(grace, float(timeout))
+    except Exception:
+        pass
+    return grace
+
+
+def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]],
+                     grace_s: float = _POSIX_TERM_GRACE_SECONDS) -> None:
     """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors, then
     sweep the dashboard-owned descendants that outlived the root and wait for the tree to be gone.
 
@@ -569,7 +586,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     for pid in pids:
         _send(pid, _signal.SIGTERM)
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
-    alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
+    alive = _wait_gone(pending, grace_s)
     killed.extend(p for p in pending if p not in alive)
     for pid in alive:
         _send(pid, _signal.SIGKILL)
@@ -669,7 +686,10 @@ def _kill_stale_dashboard_processes(
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
-    (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(pids, killed, failed)
+    if sys.platform == "win32":
+        _kill_pids_windows(pids, killed, failed)
+    else:
+        _kill_pids_posix(pids, killed, failed, grace_s=_launchd_term_grace(pid_launchd))
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:

@@ -261,6 +261,16 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
     ]
 
 
+def _is_hermes_backend_wrapper_label(label: str) -> bool:
+    """A Hermes launchd job whose ``ProgramArguments`` is a wrapper script (``/bin/bash serve-tailnet.sh``
+    that execs ``hermes serve``) never parses as a backend argv, so it used to be skipped and its
+    backend was treated as a manual process: ``hermes update`` killed it and respawned a detached copy
+    from a lossy argv (2026-09-30: ``ai.hermes.serve.tailnet`` -> ``child exited during the first 1s``).
+    Such jobs are kept by their ``ai.hermes.*`` label. Safe: a wrapper argv never equals a backend's
+    cmdline, so the job can claim a process only by launchd's own live pid (the pid or an ancestor)."""
+    return label.startswith("ai.hermes.") and not label.startswith("ai.hermes.gateway")
+
+
 def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
 ) -> list[tuple[str, str, list[str], int | None]]:
@@ -299,7 +309,7 @@ def _loaded_launchd_backend_jobs(
             if not label or not isinstance(args, list) or not args:
                 continue
             argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+            if _parse_dashboard_runtime(shlex.join(argv)) is None and not _is_hermes_backend_wrapper_label(label):
                 continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
@@ -362,6 +372,17 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        # macOS ``ps`` prints argv joined by spaces with the quoting gone, so an argument holding spaces
+        # (the PM launcher's ``python -I -c "import sys, runpy; ..."``) cannot be split back: the
+        # respawn then ran ``python -c import`` and died with exit 1. psutil reads the exact argv
+        # (KERN_PROCARGS2); ps + shlex stays the fallback.
+        try:
+            import psutil  # type: ignore
+            exact = [str(a) for a in psutil.Process(pid).cmdline()]
+            if exact:
+                return exact
+        except Exception:
+            pass
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None
