@@ -85,6 +85,11 @@ def install_serve_drain(server) -> bool:
     if threading.current_thread() is not threading.main_thread():
         return False
     from hermes_cli.backend_retirement import drain
+    try:
+        from tui_gateway.server import set_serve_exit_issuer
+        set_serve_exit_issuer(SERVE_SHUTDOWN_ISSUER)
+    except Exception:
+        logger.debug("serve exit issuer not set", exc_info=True)
 
     launchd_exit_timeout_s = None
     try:  # launchctl print is a subprocess: read once at boot, never inside a signal handler

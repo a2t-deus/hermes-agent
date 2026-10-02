@@ -117,6 +117,17 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
 _EXIT_TURN_SETTLE_S = 0.5
 
 
+# Who stops turns on the way out. None = legacy attribution (a human stop; standalone ``hermes --tui``
+# exit). ``hermes serve`` sets "serve_shutdown" (hermes_cli/serve_drain.py): exit stops are then booked
+# ``interrupted_by_system(serve_shutdown)`` and keep their crash marker for auto-continue after restart.
+# A dict, not a bare str, so the value bind_module copies onto server.py stays one shared object.
+_serve_exit_state: dict = {"issuer": None}
+
+
+def set_serve_exit_issuer(issuer: str | None) -> None:
+    _serve_exit_state["issuer"] = issuer or None
+
+
 def running_turn_sids() -> list[str]:
     """UI session ids with a turn in flight — what a serve drain waits on (hermes_cli/serve_drain.py)."""
     with _sessions_lock:
@@ -129,12 +140,16 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     group and would outlive the gateway, reparented to init. One still alive halfway through the budget
     ignored the interrupt's SIGTERM: SIGKILL it then, early enough for its result to land as well (the
     interrupt's own TERM, 1s, KILL outlasts the SIGTERM path's ~1s grace)."""
+    issuer = _serve_exit_state.get("issuer")
     with _sessions_lock:
         running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
     threads = []
     for sid, session in running:
+        if issuer:
+            # Before the interrupt: the turn's own retire points read it (_retire_turn_marker).
+            session["_exit_stop_issuer"] = issuer
         with contextlib.suppress(Exception):
-            _interrupt_session_turn(sid, session)
+            _interrupt_session_turn(sid, session, stop_reason=issuer)
         if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
             threads.append(t)
     budget = _EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s)

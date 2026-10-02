@@ -671,12 +671,16 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 
 def _interrupt_session_turn(
     sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+    stop_reason: str | None = None,
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
 
     ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
+    ``stop_reason`` names a SYSTEM stop (e.g. ``serve_shutdown``): it becomes the agent's interrupt issuer
+    (turn exit reason ``interrupted_by_system(<reason>)``) and the hook / delegation / approval label.
+    None keeps the human-stop attribution (``interrupted_by_user``, ``user_stop``).
     """
     use_compute_host = _session_uses_compute_host(session)
     should_interrupt = bool(session.get("running"))
@@ -705,21 +709,21 @@ def _interrupt_session_turn(
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
                     "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                    reason="user_stop", invalidation_reason="session_interrupt",
+                    reason=stop_reason or "user_stop", invalidation_reason="session_interrupt",
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            request_hard_interrupt(session.get("agent"), tool_reason=stop_reason)
         # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
         # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
         # interrupted completion with its partial output.
         with contextlib.suppress(Exception):
             from tools.async_delegation import interrupt_for_session
             interrupt_for_session(
-                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
+                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason=stop_reason or "user_stop",
                 parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive:
             with session["history_lock"]:
@@ -732,7 +736,7 @@ def _interrupt_session_turn(
         # deny is silent without the broadcast: a reconnecting client sees a bare 4001 on
         # approval.pending and the prompt looks lost rather than cancelled (#106678).
         # Announce BEFORE the queue is drained, or there is nothing left to name.
-        reason = "ws_orphan_reap" if orphan else "interrupt"
+        reason = stop_reason or ("ws_orphan_reap" if orphan else "interrupt")
         _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
