@@ -374,7 +374,7 @@ export function ChatSidebar({
         // during handshake) reach the reconnect ladder through the close
         // handler when a socket existed; a pre-socket failure has no close
         // event, so schedule here. `onClose` de-dupes via `reconnectTimer`.
-        if (!unmounting && feed.lastCloseCode === null) {
+        if (!unmounting && feed.lastFeedCloseCode === null) {
           scheduleReconnect()
         }
       }

@@ -22,7 +22,7 @@ type CloseHandler = (code: number | undefined) => void
 
 export class EventsFeedClient extends JsonRpcGatewayClient {
   private readonly closeHandlers = new Set<CloseHandler>()
-  private closeCode: number | null | undefined = undefined
+  private feedCloseCode: number | null | undefined = undefined
 
   constructor() {
     super({
@@ -32,7 +32,7 @@ export class EventsFeedClient extends JsonRpcGatewayClient {
       heartbeatDeadlineMs: 0,
       heartbeatIntervalMs: 0,
       onSocketClose: event => {
-        this.closeCode = event.code
+        this.feedCloseCode = event.code
         // Loopback + stale token: the page reloads; nobody should retry.
         return maybeReloadForLoopbackWsAuthFailure(event.code)
       },
@@ -41,8 +41,8 @@ export class EventsFeedClient extends JsonRpcGatewayClient {
     })
     this.onState(state => {
       if (state === 'closed' || state === 'error') {
-        const code = this.closeCode ?? undefined
-        this.closeCode = undefined
+        const code = this.feedCloseCode ?? undefined
+        this.feedCloseCode = undefined
         for (const handler of this.closeHandlers) {
           handler(code)
         }
@@ -51,8 +51,8 @@ export class EventsFeedClient extends JsonRpcGatewayClient {
   }
 
   /** Close code of the most recent drop; `null` before any socket was dialed. */
-  get lastCloseCode(): number | null | undefined {
-    return this.closeCode
+  get lastFeedCloseCode(): number | null | undefined {
+    return this.feedCloseCode
   }
 
   /**
@@ -67,7 +67,7 @@ export class EventsFeedClient extends JsonRpcGatewayClient {
 
   /** Mint a fresh single-use ticket and dial `/api/events` for `channel`. */
   async connect(channel: string): Promise<void> {
-    this.closeCode = null
+    this.feedCloseCode = null
     // Cover ticket minting with the same deadline as the handshake: a stalled
     // pre-socket request otherwise emits no close event and strands the retry
     // loop at its last "reconnecting in …" banner.
