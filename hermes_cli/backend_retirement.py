@@ -101,3 +101,32 @@ class RetirementFence:
 
 
 retirement = RetirementFence()
+
+
+# Shown to a client whose new turn is refused while ``hermes serve`` drains for a restart.
+SERVE_DRAIN_REFUSAL = ("Hermes is restarting — this message was not started. "
+                       "Send it again once the app reconnects.")
+
+
+class DrainGate:
+    """One-way "serve is draining" flag: refuse NEW turns while in-flight ones finish.
+
+    Unlike :class:`RetirementFence` it never blocks RPCs — a draining turn still needs the client's
+    approval answers, interrupts and ``session.resume`` — so only turn admission consults it
+    (``_lock_in_submit_turn`` for ``prompt.submit``, ``_admit_prompt_turn`` for every turn source).
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self.reason: str | None = None
+
+    def begin(self, reason: str) -> None:
+        if not self._event.is_set():
+            self.reason = reason
+            self._event.set()
+
+    def active(self) -> bool:
+        return self._event.is_set()
+
+
+drain = DrainGate()

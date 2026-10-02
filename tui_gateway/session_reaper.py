@@ -117,6 +117,12 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
 _EXIT_TURN_SETTLE_S = 0.5
 
 
+def running_turn_sids() -> list[str]:
+    """UI session ids with a turn in flight — what a serve drain waits on (hermes_cli/serve_drain.py)."""
+    with _sessions_lock:
+        return [sid for sid, s in _sessions.items() if isinstance(s, dict) and s.get("running")]
+
+
 def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
     with a result the teardown's final persist records. A foreground command runs in its own process

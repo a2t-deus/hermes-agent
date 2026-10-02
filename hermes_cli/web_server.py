@@ -1583,6 +1583,16 @@ def start_server(
     except Exception as exc:
         _log.debug("exit-flush signal handlers not installed: %s", exc)
 
+    # Drain in-flight desktop/TUI turns on SIGTERM / SIGUSR1 instead of cutting them (mirrors the
+    # messaging gateway's restart drain). Wraps ``server.handle_exit`` BEFORE capture_signals()
+    # installs it, so the server keeps serving (sockets open, turns streaming) until the drain ends.
+    try:
+        from hermes_cli.serve_drain import install_serve_drain
+
+        install_serve_drain(server)
+    except Exception as exc:
+        _log.warning("serve drain not installed; a stop will cut in-flight turns: %s", exc)
+
     # #93608: uvicorn's bind_socket() would exit 1 with a bare ERROR line,
     # indistinguishable from "backend broken". Probe first so a conflict
     # surfaces as the BACKEND_PORT_IN_USE sentinel + distinct exit code.

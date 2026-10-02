@@ -120,6 +120,18 @@ def _admit_prompt_turn(
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
+    from hermes_cli.backend_retirement import SERVE_DRAIN_REFUSAL, drain as _serve_drain
+    if _serve_drain.active():
+        # Serve drain (restart pending): queued drains, auto-continues and wake-ups must not start
+        # a turn the exit would cut. The refused prompt is surfaced, never silently dropped.
+        logger.info("Refusing turn for session %s at _run_prompt_submit: serve draining (%s)",
+                    session.get("session_key") or sid, _serve_drain.reason or "restart")
+        with session["history_lock"]:
+            session["running"] = False
+            session.pop("_submit_user_row", None)
+            _clear_inflight_turn(session)
+        _emit("error", sid, {"message": SERVE_DRAIN_REFUSAL})
+        return None
     held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:

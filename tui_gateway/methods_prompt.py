@@ -551,6 +551,11 @@ def _lock_in_submit_turn(
     with _session_turn_admission(session) as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
+        from hermes_cli.backend_retirement import SERVE_DRAIN_REFUSAL, drain as _serve_drain
+        if _serve_drain.active():
+            # Serve is draining in-flight turns before a restart: a new turn would be cut at exit.
+            # Same retryable code as retirement — the client reconnects and resends.
+            return _err(rid, 5035, SERVE_DRAIN_REFUSAL), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(
