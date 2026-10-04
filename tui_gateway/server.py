@@ -699,6 +699,11 @@ _live_transports_lock = threading.Lock()
 # desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
 # leaves) must be dropped there, not printed.
 _stdio_is_rpc_channel = False
+# True once this process binds the serve/dashboard WS endpoint (``hermes_cli.web_server.start_server``): a client
+# can attach to any of its sessions at any time, so a blocking clarify always waits in ``open_requests`` for
+# the attach replay. Durable host capability, never current transport state — a reconnect or a wake resumed
+# before the client attaches is still answerable. ``hermes gateway run`` / cron / batch never set it.
+_ws_client_host = False
 
 
 def register_live_transport(transport: Transport | None) -> None:

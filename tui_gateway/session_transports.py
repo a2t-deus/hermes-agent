@@ -48,17 +48,14 @@ def _session_client_answers_requests(sid: str) -> bool:
 
 
 def _session_has_answerer(sid: str) -> bool:
-    """Whether anyone can ever answer a blocking server→client request for *sid*: a live client peer, a
-    detached WebSocket session (the question waits in ``open_requests`` for the reconnect replay), or the
-    stdio TUI, whose stdout IS the client. False for a session bottoming out at stdio in a process where
-    stdout is a log sink (a Group Chat member hosted by ``hermes gateway run``): nothing can attach there,
-    so the request would only wait out its deadline. An unknown sid is left to the request's own path."""
-    session = _sessions.get(sid)
-    if session is None or _stdio_is_rpc_channel:
-        return True
-    existing = session.get("transport")
-    peers = existing.transports() if isinstance(existing, FanoutTransport) else [existing]
-    return any(peer is _detached_ws_transport or _transport_is_live_peer(peer) for peer in peers)
+    """Whether anyone can ever answer a blocking server→client request for *sid* — a property of the hosting
+    process, never of the session's current transports (a peer mid-teardown, an empty fanout, or the
+    ``_DropTransport`` a wake binds during ``session.resume`` all precede a client that will attach and get
+    the ``open_requests`` replay). True on the serve/dashboard WS host and the stdio TUI, whose stdout IS the
+    client; False only in a process with no client endpoint (a Group Chat member hosted by
+    ``hermes gateway run``, whose stdout is a log sink), where the request would only wait out its deadline.
+    An unknown sid is left to the request's own path."""
+    return _ws_client_host or _stdio_is_rpc_channel or sid not in _sessions
 
 
 def _session_answering_clients(sid: str) -> list:

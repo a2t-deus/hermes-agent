@@ -1572,6 +1572,12 @@ def start_server(
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
+    # Clients attach here, so a clarify on any in-process session waits for the attach replay (no_answerer is
+    # for processes with no client endpoint; tui_gateway/session_transports.py::_session_has_answerer).
+    import tui_gateway.server as _tui_server
+
+    _tui_server._ws_client_host = True
+
     # Flush-on-kill guard (#94724): chaining SIGTERM/SIGINT handlers persist
     # in-memory transcripts to state.db before shutdown. Installed BEFORE
     # uvicorn's capture_signals() so uvicorn re-raises into them as the
