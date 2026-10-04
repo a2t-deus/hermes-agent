@@ -1372,9 +1372,13 @@ def _clarify_timeout_seconds() -> float | None:
 def _clarify_block(sid: str, questions: list[dict], request_id: str | None = None) -> dict:
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
     (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
-    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it.
+    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it,
+    ``no_answerer`` at once when no client can ever attach (a stdout-logged headless session).
     ``request_id`` (from the clarify observer hooks) becomes the server-request frame id."""
     from tui_gateway import server_requests
+    from tools.clarify_tool import NO_ANSWERER_NOTICE
+    if not _session_has_answerer(sid):
+        return {"answers": {}, "outcome": "no_answerer", "notice": NO_ANSWERER_NOTICE}
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
     result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),

@@ -47,6 +47,20 @@ def _session_client_answers_requests(sid: str) -> bool:
     return not clients or any(server_requests.answers_requests(peer) for peer in clients)
 
 
+def _session_has_answerer(sid: str) -> bool:
+    """Whether anyone can ever answer a blocking server→client request for *sid*: a live client peer, a
+    detached WebSocket session (the question waits in ``open_requests`` for the reconnect replay), or the
+    stdio TUI, whose stdout IS the client. False for a session bottoming out at stdio in a process where
+    stdout is a log sink (a Group Chat member hosted by ``hermes gateway run``): nothing can attach there,
+    so the request would only wait out its deadline. An unknown sid is left to the request's own path."""
+    session = _sessions.get(sid)
+    if session is None or _stdio_is_rpc_channel:
+        return True
+    existing = session.get("transport")
+    peers = existing.transports() if isinstance(existing, FanoutTransport) else [existing]
+    return any(peer is _detached_ws_transport or _transport_is_live_peer(peer) for peer in peers)
+
+
 def _session_answering_clients(sid: str) -> list:
     """The live WebSocket clients attached to *sid* that advertised answering server→client requests:
     the windows whose unanimous "not shown here" settles a window-owned request (server_requests.py)."""

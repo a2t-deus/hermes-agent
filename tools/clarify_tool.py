@@ -18,6 +18,9 @@ MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
+# Notice for ``outcome: no_answerer``: the session has no surface anyone could answer on, so the tool returns at
+# once instead of blocking for ``clarify_timeout``.
+NO_ANSWERER_NOTICE = "No one can answer here; state your question in your reply and stop."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
@@ -111,7 +114,7 @@ def _emit_post_clarify(entries: List[dict], *, session_id: str, request_id: str,
 
 # Callback reply ``outcome`` -> the observer-hook vocabulary (stable for existing hook consumers).
 _HOOK_OUTCOMES = {"submitted": "answered", "timed_out": "timeout", "cancelled": "cancelled",
-                  "undelivered": "undelivered"}
+                  "undelivered": "undelivered", "no_answerer": "no_answerer"}
 
 
 def _clarify_hook_outcome(reply) -> str:
@@ -230,7 +233,8 @@ CLARIFY_SCHEMA = {
         "can't click). Result: {responses: [...], outcome} in question order. "
         "Each response has status answered, skipped or unanswered "
         "(user_response is null unless answered); outcome is submitted, "
-        "cancelled, timed_out or undelivered, with a notice saying why "
+        "cancelled, timed_out, undelivered or no_answerer (nobody can answer here: ask in your reply and stop), "
+        "with a notice saying why "
         "when the wait ended without a submit. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
         "confirmation (the terminal tool handles that)."
