@@ -572,7 +572,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
         return
       }
 
-      if (this.lastCloseCode !== 1012 || running.size === 0) {
+      // A canonical gateway reports a cut turn itself (its lost-admission row / prompt.resolve_unknown).
+      if (this.canonical || this.lastCloseCode !== 1012 || running.size === 0) {
         return
       }
 

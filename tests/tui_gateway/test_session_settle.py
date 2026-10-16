@@ -13,7 +13,7 @@ import time
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session  # registers the RPC methods
 from hermes_state import SessionDB
 
 
@@ -299,7 +299,7 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
     box = {}
 
     def ask():
-        cb = lambda questions, request_id=None: srv._clarify_block(sid, questions, request_id=request_id)  # noqa: E731
+        cb = lambda questions, request_id=None: srv._clarify_block(sid, questions, request_id=request_id)
         box["result"] = clarify_tool([{"question": "Ship it?", "choices": ["yes", "no"]}], callback=cb)
 
     thread = threading.Thread(target=ask, daemon=True)

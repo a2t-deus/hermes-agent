@@ -28,7 +28,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -95,7 +95,7 @@ def _slugify(value: str) -> str:
     return slug or "remote"
 
 
-def resolve_target(connect: str, config: Optional[Dict[str, Any]] = None) -> RemoteTarget:
+def resolve_target(connect: str, config: Optional[dict[str, Any]] = None) -> RemoteTarget:
     """Resolve ``--connect <name|url>`` to a :class:`RemoteTarget`.
 
     A value containing ``://`` is taken as a literal origin (its jar name is derived from
@@ -140,7 +140,7 @@ def cookie_path(name: str, *, home: Optional[Path] = None) -> Path:
     return remote_dir(name, home=home) / "cookies.json"
 
 
-def load_jar(path: Path) -> Dict[str, Any]:
+def load_jar(path: Path) -> dict[str, Any]:
     """Read a cookie jar, or an empty one. A corrupt jar is *not* fatal — it means re-login."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -156,7 +156,7 @@ def load_jar(path: Path) -> Dict[str, Any]:
     return data
 
 
-def save_jar(path: Path, jar: Dict[str, Any]) -> Path:
+def save_jar(path: Path, jar: dict[str, Any]) -> Path:
     """Persist a jar 0600, atomically.
 
     The temp file is created inside the destination directory with ``mkstemp`` (0600 by
@@ -183,7 +183,7 @@ def save_jar(path: Path, jar: Dict[str, Any]) -> Path:
 # --- Login / session --------------------------------------------------------
 
 
-def _client(base_url: str, cookies: Optional[Dict[str, str]] = None) -> httpx.Client:
+def _client(base_url: str, cookies: Optional[dict[str, str]] = None) -> httpx.Client:
     """An origin-pinned client. ``trust_env=False``: a corporate ``HTTPS_PROXY`` must not get
     to MITM a tailnet handshake, and redirects are never followed onto another host."""
     return httpx.Client(
@@ -213,7 +213,7 @@ def discover_password_provider(client: httpx.Client) -> str:
         "Remote serve advertises no password provider; interactive --connect login needs one.")
 
 
-def _jar_cookies(client: httpx.Client) -> Dict[str, str]:
+def _jar_cookies(client: httpx.Client) -> dict[str, str]:
     """Flatten the client's cookie jar to ``name -> value``.
 
     Cookies we seed the client with carry no domain; cookies the serve sets carry one. After a
@@ -221,7 +221,7 @@ def _jar_cookies(client: httpx.Client) -> Dict[str, str]:
     ``CookieConflict`` on exactly that. The domain-bearing entry is the one the serve just
     issued, so it wins over the seed it replaces.
     """
-    resolved: Dict[str, str] = {}
+    resolved: dict[str, str] = {}
     from_server: set = set()
     for cookie in client.cookies.jar:
         if cookie.name in from_server and not cookie.domain:
@@ -232,7 +232,7 @@ def _jar_cookies(client: httpx.Client) -> Dict[str, str]:
     return resolved
 
 
-def login(target: RemoteTarget, username: str, password: str) -> Dict[str, str]:
+def login(target: RemoteTarget, username: str, password: str) -> dict[str, str]:
     """Exchange username/password for the serve's session cookie set.
 
     Returns the cookie name→value mapping. The password is not retained, logged, or returned.
@@ -260,7 +260,7 @@ def login(target: RemoteTarget, username: str, password: str) -> Dict[str, str]:
         return cookies
 
 
-def probe_session(target: RemoteTarget, cookies: Dict[str, str]) -> Optional[Dict[str, str]]:
+def probe_session(target: RemoteTarget, cookies: dict[str, str]) -> Optional[dict[str, str]]:
     """Return the (possibly rotated) cookie set if the stored session is still live, else None.
 
     A network failure is *not* a rejection: it raises, so a flaky link never silently discards a
@@ -296,7 +296,7 @@ def _read_password(target: RemoteTarget, username: str) -> str:
     return getpass.getpass(f"Password for {username}@{target.name}: ")
 
 
-def _read_username(target: RemoteTarget, jar: Dict[str, Any]) -> str:
+def _read_username(target: RemoteTarget, jar: dict[str, Any]) -> str:
     username = target.username or str(jar.get("username") or "")
     if username:
         return username
