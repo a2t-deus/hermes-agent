@@ -43,14 +43,10 @@ def _cmd_list(_args) -> None:
     if not specs:
         print("No shell hooks configured in ~/.hermes/config.yaml.")
     else:
-        by_event: Dict[str, List] = {}
+        by_event: dict[str, list] = {}
         for spec in specs:
             by_event.setdefault(spec.event, []).append(spec)
-        approved = {
-            (e.get("event"), e.get("command"))
-            for e in shell_hooks.load_allowlist().get("approvals", [])
-            if isinstance(e, dict)
-        }
+        approved = shell_hooks.allowlisted_pairs()
         print(f"Configured shell hooks ({len(specs)} total):\n")
         for event in sorted(by_event):
             print(f"  [{event}]")
@@ -118,13 +114,6 @@ _DEFAULT_PAYLOADS = {
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
-    "pre_clarify_request": {
-        "session_id": "test-session", "request_id": "test-request", "question": "Proceed?",
-        "choices": ["Yes", "No"], "multi_select": False, "platform": "cli",
-    },
-    "post_clarify_response": {
-        "session_id": "test-session", "request_id": "test-request", "outcome": "answered", "platform": "cli",
-    },
     "pre_verify": {
         "session_id": "test-session", "platform": "cli", "model": "gpt-4", "coding": True,
         "attempt": 0, "final_response": "All done — the change is applied.",
@@ -232,7 +221,7 @@ def _cmd_test(args) -> None:
         print()
 
 
-def _print_run_result(result: Dict[str, Any]) -> None:
+def _print_run_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
     elif result.get("timed_out"):
@@ -270,8 +259,9 @@ def _cmd_revoke(args) -> None:
         return
     print(f"Removed {removed} allowlist entry/entries for: {args.command}")
     print(
-        "Note: currently running CLI / gateway processes keep their "
-        "already-registered callbacks until they restart."
+        "Note: a running gateway stops running it when the next local session opens (unless "
+        "--accept-hooks / HERMES_ACCEPT_HOOKS / hooks_auto_accept approves every hook there); "
+        "other running processes keep it until they restart."
     )
 
 

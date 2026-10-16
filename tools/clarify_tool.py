@@ -4,11 +4,8 @@ callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import inspect
 import json
-import logging
 import uuid
 from typing import Callable, Dict, List, Optional
-
-logger = logging.getLogger(__name__)
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per call
@@ -18,13 +15,13 @@ MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
-# Notice for ``outcome: no_answerer``: the session has no surface anyone could answer on, so the tool returns at
-# once instead of blocking for ``clarify_timeout``.
+# Notice for a process with no client endpoint (outcome ``undelivered``): nobody can ever answer, so the tool
+# returns at once instead of blocking for ``clarify_timeout``.
 NO_ANSWERER_NOTICE = "No one can answer here; state your question in your reply and stop."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
-def mark_recommended(choices: List[str]) -> List[str]:
+def mark_recommended(choices: list[str]) -> list[str]:
     """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
     and a lone choice is left untouched (nothing to prefer it over)."""
     first = str(choices[0]).strip() if choices else ""
@@ -49,6 +46,20 @@ def _accepts_kwarg(callback, name: str) -> bool:
     except (TypeError, ValueError):
         return False
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _hook_extras(normalized: list[dict]) -> dict:
+    """Clarify-only ``on_human_input_request`` extras: the question text (redacted like ``prompt``) and the
+    offered choices, so an observer can render answer buttons. Never the answers."""
+    from tools.human_input_hooks import _redacted
+    questions = [{"question": _redacted(q["question"]), "choices": q["choices_offered"],
+                  "multi_select": bool(q["multi_select"])} for q in normalized]
+    if len(questions) == 1:
+        return dict(questions[0])
+    joined = _redacted("\n".join(q["question"] for q in normalized))
+    return {"question": joined, "choices": None, "multi_select": False, "questions": questions}
+
+
 def _clean_answer(raw, multi: bool):
     """Strip presentation (the label, multi-select JSON) from a locked answer: a multi-select
     answer is a list, a JSON array string, or one typed ("Other") answer."""
@@ -63,63 +74,6 @@ def _clean_answer(raw, multi: bool):
     return [strip_recommended(item) for item in raw if str(item).strip()]
 
 
-def _clarify_request_id(request_id: Optional[str] = None, *, server_request: bool = False) -> str:
-    supplied = str(request_id or "").strip()
-    if supplied:
-        return supplied
-    if server_request:
-        return f"srq-{uuid.uuid4().hex[:12]}"
-    return uuid.uuid4().hex
-
-
-def _uses_server_request_id(callback, platform: str) -> bool:
-    """The TUI/Desktop serve bridge uses this id as the JSON-RPC server-request frame id.
-
-    Other surfaces keep the hook-only uuid4 hex id promised by the hook contract.
-    """
-    return _accepts_kwarg(callback, "request_id") and (platform or "").lower() in {"serve", "desktop", "tui"}
-
-
-def _invoke_clarify_hook(hook_name: str, **kwargs) -> None:
-    """Best-effort clarify observer dispatch; observer failures never affect the tool."""
-    try:
-        from hermes_cli.lifecycle import invoke_hook
-        invoke_hook(hook_name, **kwargs)
-    except Exception as exc:
-        logger.debug("Clarify hook %s dispatch failed: %s", hook_name, exc)
-
-
-def _emit_pre_clarify(entry: dict, *, session_id: str, request_id: str, platform: str) -> None:
-    _invoke_clarify_hook(
-        "pre_clarify_request",
-        session_id=session_id or "",
-        request_id=request_id,
-        question=entry["question"],
-        choices=entry["choices_offered"],
-        multi_select=bool(entry["multi_select"]),
-        platform=platform or "",
-    )
-
-
-def _emit_post_clarify(entries: List[dict], *, session_id: str, request_id: str, platform: str, outcome: str) -> None:
-    for _entry in entries:
-        _invoke_clarify_hook(
-            "post_clarify_response",
-            session_id=session_id or "",
-            request_id=request_id,
-            outcome=outcome,
-            platform=platform or "",
-        )
-
-
-# Callback reply ``outcome`` -> the observer-hook vocabulary (stable for existing hook consumers).
-_HOOK_OUTCOMES = {"submitted": "answered", "timed_out": "timeout", "cancelled": "cancelled",
-                  "undelivered": "undelivered", "no_answerer": "no_answerer"}
-
-
-def _clarify_hook_outcome(reply) -> str:
-    outcome = reply.get("outcome") if isinstance(reply, dict) else None
-    return _HOOK_OUTCOMES.get(str(outcome or ""), "answered")
 def _normalize_questions(questions) -> tuple:
     """Validate ``questions`` -> ``(normalized, error)``. Entries carry ``qid`` (stable wire id
     ``q<index>`` surfaces key answers by), ``question``, decorated ``choices``, bare
@@ -165,7 +119,7 @@ def _response_status(qid: str, answers: dict, multi: bool) -> tuple:
     return ("skipped" if qid in answers else "unanswered"), None
 
 
-def _result(normalized: List[dict], reply: dict) -> str:
+def _result(normalized: list[dict], reply: dict) -> str:
     """Result JSON from a callback reply ``{"answers": {qid: raw | None}, "outcome", "notice"?}``:
     every response carries ``status`` and ``user_response`` (null unless answered); ``outcome``
     says how the wait ended and ``notice`` (surface-supplied) says why."""
@@ -175,39 +129,36 @@ def _result(normalized: List[dict], reply: dict) -> str:
         status, value = _response_status(entry["qid"], answers, entry["multi_select"])
         responses.append({"question": entry["question"], "choices_offered": entry["choices_offered"],
                           "status": status, "user_response": value})
-    result: Dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
+    result: dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
     if reply.get("notice"):
         result["notice"] = str(reply["notice"])
     return json.dumps(result, ensure_ascii=False)
 
 
-def clarify_tool(questions, callback: Optional[Callable] = None, *, session_id: str = "",
-                 request_id: Optional[str] = None, platform: str = "") -> str:
+def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
     """Ask 1-5 questions in one call. ``callback(questions) -> {"answers", "outcome", "notice"?}``
-    is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list;
-    callbacks that accept ``request_id`` also get the id the clarify observer hooks report."""
+    is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list."""
     normalized, error = _normalize_questions(questions)
     if error:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
-    request_id = _clarify_request_id(request_id, server_request=_uses_server_request_id(callback, platform))
-    for entry in normalized:
-        _emit_pre_clarify(entry, session_id=session_id, request_id=request_id, platform=platform)
-    outcome = "error"
-    try:
-        if _accepts_kwarg(callback, "request_id"):
-            reply = callback(normalized, request_id=request_id)
-        else:
-            reply = callback(normalized)
-        result = _result(normalized, reply)
-        outcome = _clarify_hook_outcome(reply)
-        return result
-    except Exception as exc:
-        outcome = "error"
-        return tool_error(f"Failed to get user input: {exc}")
-    finally:
-        _emit_post_clarify(normalized, session_id=session_id, request_id=request_id, platform=platform, outcome=outcome)
+    from tools.human_input_hooks import human_input_request
+    # Observers see the questions only; the answers stay in the tool result.
+    extras = _hook_extras(normalized)
+    # A callback that takes ``request_id`` (the serve bridge) uses it as the server-request frame id a client
+    # answers with; observers get it as ``answer_request_id`` (the hook's own ``request_id`` is a fresh uuid).
+    answer_request_id = f"srq-{uuid.uuid4().hex[:12]}" if _accepts_kwarg(callback, "request_id") else None
+    if answer_request_id:
+        extras["answer_request_id"] = answer_request_id
+    with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized), **extras) as human:
+        try:
+            reply = callback(normalized, request_id=answer_request_id) if answer_request_id else callback(normalized)
+            human.outcome = str(reply.get("outcome") or "")
+            return _result(normalized, reply)
+        except Exception as exc:
+            human.outcome = "error"
+            return tool_error(f"Failed to get user input: {exc}")
 
 
 def check_clarify_requirements() -> bool:
@@ -233,8 +184,7 @@ CLARIFY_SCHEMA = {
         "can't click). Result: {responses: [...], outcome} in question order. "
         "Each response has status answered, skipped or unanswered "
         "(user_response is null unless answered); outcome is submitted, "
-        "cancelled, timed_out, undelivered or no_answerer (nobody can answer here: ask in your reply and stop), "
-        "with a notice saying why "
+        "cancelled, timed_out or undelivered, with a notice saying why "
         "when the wait ended without a submit. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
         "confirmation (the terminal tool handles that)."
@@ -258,7 +208,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
+                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},
@@ -278,12 +228,7 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(
-        args.get("questions"),
-        callback=kw.get("callback"),
-        session_id=kw.get("session_id") or kw.get("task_id") or "",
-        platform=kw.get("platform") or "",
-        request_id=kw.get("request_id")),
+    handler=lambda args, **kw: clarify_tool(args.get("questions"), callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )
