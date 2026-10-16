@@ -13,6 +13,7 @@ import { deleteSession, getSession, type SessionInfo, setSessionArchived } from 
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $profiles } from '@/store/profile'
 import { setSessions } from '@/store/session'
+import { untombstoneSessions } from '@/store/session-removal'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -123,6 +124,8 @@ describe('delete/archive of a session owned by another registry connection', () 
 
   afterEach(() => {
     cleanup()
+    // Each case deletes/archives the same row; its tombstone must not hide it from the next case.
+    untombstoneSessions([SID])
     setSessions([])
     setApiRequestConnection(null)
     $connectionsRegistry.set(null)
@@ -136,6 +139,8 @@ describe('delete/archive of a session owned by another registry connection', () 
     await act(() => handle.removeSession(SID))
 
     expect(deleteSession).not.toHaveBeenCalledWith(SID, 'default')
+    // The resolver found the owner, so the delete runs there (failing closed is for an unresolved owner).
+    expect(deleteSession).toHaveBeenCalledTimes(1)
     expectOwnerRouteOrFailClosed(vi.mocked(deleteSession).mock.calls)
   })
 
@@ -145,6 +150,7 @@ describe('delete/archive of a session owned by another registry connection', () 
     await act(() => handle.archiveSession(SID))
 
     expect(setSessionArchived).not.toHaveBeenCalledWith(SID, true, 'default')
+    expect(setSessionArchived).toHaveBeenCalledTimes(1)
     expectOwnerRouteOrFailClosed(vi.mocked(setSessionArchived).mock.calls.map(([id, , owner]) => [id, owner]))
   })
 
