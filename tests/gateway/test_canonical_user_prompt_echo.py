@@ -50,7 +50,10 @@ async def test_canonical_submit_echoes_once_to_every_viewer_before_message_start
             kinds = [f['type'] for f in frames]
             assert kinds.count('user.prompt') == 1, kinds
             assert kinds.index('user.prompt') < kinds.index('message.start'), kinds
-            assert frames[kinds.index('user.prompt')]['payload'] == {'text': 'sent from the source', 'images': 0}
+            echo = frames[kinds.index('user.prompt')]
+            assert echo['payload'] == {'text': 'sent from the source', 'images': 0}
+            # Desktop's execution fence drops stamped output ahead of the claim's message.start.
+            assert 'execution_generation' not in echo, echo
         leaked = []
         while not bystander.frames.empty():
             leaked.append(bystander.frames.get_nowait())

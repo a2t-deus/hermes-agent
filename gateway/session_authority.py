@@ -862,14 +862,17 @@ class SessionAuthority:
         retirement's join) ever sees a committed claim that no execution stamp names."""
         if row:  # None or False (the head changed under the write) claimed nothing
             with live.event_stream.lock:
+                from gateway.session_display import admission_user_prompt
+                if (echo := admission_user_prompt(live.source, row.get('payload') or {})) is not None:
+                    # Fork: admission data, not execution output. Unstamped, because a viewer's execution
+                    # fence drops stamped output that precedes the claim's message.start.
+                    live.event_stream.execution = {}
+                    live.event_stream.publish(ref.session_id, echo, event_type='user.prompt')
                 live.event_stream.execution = {
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
                 from gateway.session_automation import admission_display
-                from gateway.session_display import admission_user_prompt
-                if (echo := admission_user_prompt(live.source, row.get('payload') or {})) is not None:
-                    live.event_stream.publish(ref.session_id, echo, event_type='user.prompt')
                 live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
                                           event_type='message.start')
                 self._publish_pending(ref)
