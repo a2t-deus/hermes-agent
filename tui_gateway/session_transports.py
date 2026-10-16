@@ -68,14 +68,14 @@ def _session_client_answers_requests(sid: str) -> bool:
 
 
 def _session_has_answerer(sid: str) -> bool:
-    """Whether anyone can ever answer a blocking server→client request for *sid* — a property of the hosting
-    process, never of the session's current transports (a peer mid-teardown, an empty fanout, or the
-    ``_DropTransport`` a wake binds during ``session.resume`` all precede a client that will attach and get
-    the ``open_requests`` replay). True on the serve/dashboard WS host and the stdio TUI, whose stdout IS the
-    client; False only in a process with no client endpoint (a Group Chat member hosted by
-    ``hermes gateway run``, whose stdout is a log sink), where the request would only wait out its deadline.
-    An unknown sid is left to the request's own path."""
-    return _ws_client_host or _stdio_is_rpc_channel or sid not in _sessions
+    """Whether anyone can ever answer a blocking server→client request for *sid*. A hosted Group Chat member
+    (``source == "bot_room"``) never can: room controls expose approvals only, the same rule the session
+    authority applies to its own room turns (gateway/session_local.py::_unanswerable_clarify). Every other
+    session is answerable whatever its transports look like now — a peer mid-teardown, an empty fanout or the
+    ``_DropTransport`` a wake binds during ``session.resume`` all precede a client that attaches and gets the
+    ``open_requests`` replay. An unknown sid is left to the request's own path."""
+    session = _sessions.get(sid)
+    return session is None or session.get("source") != "bot_room"
 
 
 def _session_answering_clients(sid: str) -> list:

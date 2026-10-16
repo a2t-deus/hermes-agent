@@ -228,11 +228,6 @@ async def http_lifespan(app: FastAPI):
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
-    # Clients attach here (standalone serve or the gateway's dashboard mount), so a clarify on any in-process
-    # tui_gateway session waits for the attach replay; tui_gateway/session_transports.py::_session_has_answerer.
-    import tui_gateway.server as _tui_server
-
-    _tui_server._ws_client_host = True
     lifespan = http_lifespan if getattr(app.state, "gateway_runner", None) is not None else standalone_lifespan
     async with lifespan(app):
         yield

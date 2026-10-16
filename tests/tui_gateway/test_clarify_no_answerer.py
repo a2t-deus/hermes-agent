@@ -1,9 +1,9 @@
-"""Whether a clarify can ever be answered is a property of the hosting process, not of the session's transports.
+"""Whether a clarify can ever be answered is a property of the session's kind, never of its transports now.
 
-Regression for the headless Group Chat member hosted by ``hermes gateway run``: its session bottoms out at
-stdio in a process whose stdout is a log sink, so the question froze the agent for the full hour. On the
-serve (WS client host) the question must instead always wait in ``open_requests`` for the attach replay —
-even mid-reconnect or when a wake resumed the session before any client attached.
+Regression for the headless Group Chat member: a hosted room session (``source=bot_room``) has no surface
+anyone answers a question on (room controls expose approvals only), so the question froze the agent for the
+full hour. Every other session must instead always wait in ``open_requests`` for the attach replay — even
+mid-reconnect or when a wake resumed the session before any client attached.
 """
 
 import json
@@ -25,12 +25,7 @@ class _ClosedPeer:
         return False
 
 
-def _host(monkeypatch, *, ws_client_host, stdio_rpc=False):
-    monkeypatch.setattr(server, "_ws_client_host", ws_client_host, raising=False)
-    monkeypatch.setattr(server, "_stdio_is_rpc_channel", stdio_rpc)
-
-
-def _ask(monkeypatch, sid, transport, *, timeout=0.0):
+def _ask(monkeypatch, sid, transport, *, timeout=0.0, source="desktop"):
     frames, hooks = [], []
     server_requests.reset_for_tests()
     monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: timeout)
@@ -38,7 +33,7 @@ def _ask(monkeypatch, sid, transport, *, timeout=0.0):
     monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
     monkeypatch.setattr(server_requests, "_answerable", lambda sid: True)
     monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kw: hooks.append((name, kw)))
-    monkeypatch.setitem(server._sessions, sid, {"session_key": f"key-{sid}", "transport": transport})
+    monkeypatch.setitem(server._sessions, sid, {"session_key": f"key-{sid}", "transport": transport, "source": source})
     started = time.monotonic()
     result = json.loads(clarify_tool(
         [{"question": "Which env?", "choices": ["staging", "prod"]}],
@@ -50,10 +45,10 @@ def _resolved(hooks):
     return [kw["outcome"] for name, kw in hooks if name == "on_human_input_resolved"]
 
 
-def test_process_without_a_client_endpoint_returns_no_answerer_immediately(monkeypatch):
-    """`hermes gateway run` hosting a Group Chat member: no WS endpoint, stdout is a log sink."""
-    _host(monkeypatch, ws_client_host=False)
-    result, frames, hooks, elapsed = _ask(monkeypatch, "gateway-room-member", server._stdio_transport, timeout=3600)
+def test_hosted_room_member_returns_undelivered_immediately(monkeypatch):
+    """A Group Chat member's clarify: nobody can answer it, so the tool returns at once."""
+    result, frames, hooks, elapsed = _ask(monkeypatch, "room-member", server._stdio_transport, timeout=3600,
+                                          source="bot_room")
 
     assert elapsed < 1.0
     assert frames == []  # nothing was sent to a client that does not exist
@@ -64,15 +59,14 @@ def test_process_without_a_client_endpoint_returns_no_answerer_immediately(monke
     assert _resolved(hooks) == ["undelivered"]  # observers clear the ask
 
 
-@pytest.mark.parametrize("label, make_transport, ws_client_host, stdio_rpc", [
-    ("serve-closed-peer-mid-teardown", _ClosedPeer, True, False),
-    ("serve-empty-fanout", FanoutTransport, True, False),
-    ("serve-wake-drop-transport-before-attach", server._DropTransport, True, False),
-    ("serve-detached-awaiting-reconnect", lambda: server._detached_ws_transport, True, False),
-    ("stdio-tui", lambda: server._stdio_transport, False, True),
+@pytest.mark.parametrize("label, make_transport", [
+    ("closed-peer-mid-teardown", _ClosedPeer),
+    ("empty-fanout", FanoutTransport),
+    ("wake-drop-transport-before-attach", server._DropTransport),
+    ("detached-awaiting-reconnect", lambda: server._detached_ws_transport),
+    ("stdio", lambda: server._stdio_transport),
 ])
-def test_client_host_always_sends_the_request(monkeypatch, label, make_transport, ws_client_host, stdio_rpc):
-    _host(monkeypatch, ws_client_host=ws_client_host, stdio_rpc=stdio_rpc)
+def test_a_non_room_session_always_sends_the_request(monkeypatch, label, make_transport):
     result, frames, hooks, _ = _ask(monkeypatch, label, make_transport())
 
     assert [f["method"] for f in frames] == ["clarify"]
@@ -82,7 +76,6 @@ def test_client_host_always_sends_the_request(monkeypatch, label, make_transport
 
 def test_serve_question_survives_reconnect_and_is_answered_from_the_replay(monkeypatch):
     """A clarify raised while the only peer is closing waits in open_requests; the reattached client answers it."""
-    _host(monkeypatch, ws_client_host=True)
     outcome = {}
     asker = threading.Thread(target=lambda: outcome.update(
         zip(("result", "frames", "hooks", "elapsed"), _ask(monkeypatch, "reconnecting", _ClosedPeer(), timeout=10))))

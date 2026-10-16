@@ -291,7 +291,6 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
     cancels = []
     monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append((event, payload)))
     monkeypatch.setattr(srv, "_clarify_timeout_seconds", lambda: 30)
-    monkeypatch.setattr(srv, "_ws_client_host", True)  # the serve: a clarify waits for a client
 
     _seed(db, "stored-key")
     sid = "live-1"

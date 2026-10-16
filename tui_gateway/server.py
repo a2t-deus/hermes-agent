@@ -743,11 +743,6 @@ _live_transports_lock = threading.Lock()
 # desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
 # leaves) must be dropped there, not printed.
 _stdio_is_rpc_channel = False
-# True once this process binds the serve/dashboard WS endpoint (``hermes_cli.web_server.start_server``): a client
-# can attach to any of its sessions at any time, so a blocking clarify always waits in ``open_requests`` for
-# the attach replay. Durable host capability, never current transport state — a reconnect or a wake resumed
-# before the client attaches is still answerable. ``hermes gateway run`` / cron / batch never set it.
-_ws_client_host = False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -1118,7 +1113,7 @@ def _clarify_block(sid: str, questions: list[dict], request_id: str | None = Non
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
     (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
     (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it,
-    and at once (with ``NO_ANSWERER_NOTICE``) when no client can ever attach (a stdout-logged headless session).
+    and at once (with ``NO_ANSWERER_NOTICE``) for a session nobody can ever answer (a hosted room member).
     ``request_id`` (the hook's ``answer_request_id``) becomes the server-request frame id."""
     from tui_gateway import server_requests
     from tools.clarify_tool import NO_ANSWERER_NOTICE
@@ -1127,7 +1122,7 @@ def _clarify_block(sid: str, questions: list[dict], request_id: str | None = Non
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
     result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                  qids=[e["qid"] for e in questions], request_id=request_id)
+                                  qids=[e["qid"] for e in questions], **({"request_id": request_id} if request_id else {}))
     return result or {"answers": {}, "outcome": "undelivered"}
 
 
