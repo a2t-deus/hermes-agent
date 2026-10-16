@@ -76,3 +76,25 @@ def worker_display_kwargs():
     return {**({'persist_user_display_kind': HIDDEN} if committed.get('kind') == HIDDEN else {}),
             **({'persist_user_display_metadata': {'title_preview': committed['title_preview']}}
                if committed.get('title_preview') else {})}
+
+
+def admission_user_prompt(source, payload):
+    """Fork ``user.prompt`` echo for a claimed client submit on a local (Desktop/TUI) session, else None:
+    peers render it before the reply.
+
+    Messaging-platform sessions, automation admissions (``local_automation_v1`` / ``native_text_v1``),
+    hidden sends and non-text API bodies are not user prompts. Mirrors ``tui_gateway.methods_prompt._echo_user_prompt``,
+    which covers the legacy ``/api/ws`` dispatcher that never reaches this authority."""
+    from gateway.config import Platform
+    text = payload.get('text')
+    if (getattr(source, 'platform', None) != Platform.LOCAL
+            or 'local_automation_v1' in payload or 'native_text_v1' in payload
+            or (payload.get('display_v1') or {}).get('kind') == HIDDEN
+            or not isinstance(text, str) or not text.strip()):
+        return None
+    from agent.skill_commands import describe_skill_invocation
+    invocation = describe_skill_invocation(text, separator=' ') or ''
+    echo = {'text': invocation or text, 'images': len(payload.get('attachments') or [])}
+    if invocation:
+        echo['display_kind'] = 'skill_invocation'
+    return echo

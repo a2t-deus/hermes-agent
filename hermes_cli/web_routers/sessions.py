@@ -948,25 +948,37 @@ def _cancel_pending_for_settle(db, sid: str, profile: Optional[str]) -> None:
 
 
 _LEGACY_SIDEBAR_KEYS = frozenset({'pinned', 'unread', 'profile'})
+_LEGACY_SIDEBAR_ATTEMPTS = 3
 _legacy_sidebar_logged = False
 
 
-async def _legacy_sidebar_identity(session_id: str, body: SessionRename, payload: dict, request: Request):
-    """Fork compat (D15/C6): installed Deus apps PATCH pin/read without mutation identity.
+def _is_legacy_sidebar(body: SessionRename, payload: dict) -> bool:
+    sent = body.model_fields_set
+    return bool(payload) and 'request_id' not in sent and 'expected_revision' not in sent and sent <= _LEGACY_SIDEBAR_KEYS
 
-    Those idempotent flags alone are admitted last-writer-wins (fork-main semantics) with a minted
-    ``request_id`` at the current revision; every other identity-less body stays upstream-strict (409).
+
+async def _mutate_legacy_sidebar(session_id: str, body: SessionRename, payload: dict, request: Request):
+    """Fork compat (D15/D17, contract C6): installed Deus apps PATCH pin/read without mutation identity.
+
+    Those idempotent flags alone are applied last-writer-wins, as on fork main: a minted ``request_id`` at
+    the current revision, re-read and re-applied when a concurrent writer moved it (the app reverts a pin
+    and shows an error on 409, and drops a failed read-mark), at most ``_LEGACY_SIDEBAR_ATTEMPTS`` times.
     Remove once the app sends identity.
     """
+    from hermes_cli.web_server_sessions import _mutate_session_request
     global _legacy_sidebar_logged
-    sent = body.model_fields_set
-    if 'request_id' in sent or 'expected_revision' in sent or not payload or not sent <= _LEGACY_SIDEBAR_KEYS:
-        return body.request_id, body.expected_revision
-    snapshot = await get_session_mutation_snapshot(session_id, request, body.profile)
     if not _legacy_sidebar_logged:
         _legacy_sidebar_logged = True
         _log.info("PATCH /api/sessions: admitting identity-less pin/read (legacy client, D15 shim)")
-    return str(uuid.uuid4()), snapshot['runtime_revision']
+    for attempt in range(1, _LEGACY_SIDEBAR_ATTEMPTS + 1):
+        snapshot = await get_session_mutation_snapshot(session_id, request, body.profile)
+        try:
+            return await _mutate_session_request(request, body.profile, session_id,
+                request_id=str(uuid.uuid4()), expected_revision=snapshot['runtime_revision'],
+                operation='sidebar', payload=payload)
+        except HTTPException as exc:
+            if exc.status_code != 409 or exc.detail != 'revision_conflict' or attempt == _LEGACY_SIDEBAR_ATTEMPTS:
+                raise
 
 
 @manage_router.patch("/api/sessions/{session_id}")
@@ -975,10 +987,12 @@ async def rename_session_endpoint(session_id: str, body: SessionRename, request:
     from hermes_cli.web_server_sessions import _mutate_session_request
     payload = {key: getattr(body, key) for key in ('title', 'archived', 'hidden', 'pinned', 'unread', 'settled')
                if getattr(body, key) is not None}
-    request_id, expected_revision = await _legacy_sidebar_identity(session_id, body, payload, request)
-    result = await _mutate_session_request(request, body.profile, session_id,
-        request_id=request_id, expected_revision=expected_revision,
-        expected_generation=body.expected_generation, operation='sidebar', payload=payload)
+    if _is_legacy_sidebar(body, payload):
+        result = await _mutate_legacy_sidebar(session_id, body, payload, request)
+    else:
+        result = await _mutate_session_request(request, body.profile, session_id,
+            request_id=body.request_id, expected_revision=body.expected_revision,
+            expected_generation=body.expected_generation, operation='sidebar', payload=payload)
     if body.settled:
         def _cancel(db):
             if sid := _resolve_session_id(db, session_id):

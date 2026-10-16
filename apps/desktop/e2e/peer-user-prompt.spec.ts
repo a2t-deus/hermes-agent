@@ -42,8 +42,10 @@ test('a message sent from a peer window appears in the source before the reply, 
   await composer(source).press('Enter')
   await expect(replies(source)).toHaveCount(1, { timeout: 60_000 })
 
+  // A ⌘⇧N peer boots onto a fresh draft (f91451ba93), so open the shared chat explicitly.
+  const sessionId = await source.evaluate(() => decodeURIComponent(location.hash.replace(/^#\/?/, '').split('?')[0] ?? ''))
   const opened = app.waitForEvent('window')
-  await source.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+N' : 'Control+Shift+N')
+  await source.evaluate(id => (window as any).hermesDesktop.openSessionWindow(id), sessionId)
   const peer = await opened
   installErrorBannerGuard(peer)
   await expect(replies(peer)).toHaveCount(1, { timeout: 90_000 })
