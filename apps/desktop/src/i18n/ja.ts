@@ -1246,6 +1246,12 @@ export const jaOverrides = {
       },
       loading: 'プロバイダーを読み込み中...'
     },
+    connections: {
+      hideLocalTitle: 'このデバイスを非表示',
+      hideLocalDesc:
+        'アプリが管理するローカルランタイムをサイドバーと切り替えメニューから除外します。リモートゲートウェイがプライマリの間のみ使用できます。',
+      hideLocalPrimaryHint: 'このデバイスを非表示にするには、リモートゲートウェイをプライマリにしてください。'
+    },
     sessions: {
       loading: 'アーカイブ済みセッションを読み込み中…',
       archivedTitle: 'アーカイブ済みセッション',

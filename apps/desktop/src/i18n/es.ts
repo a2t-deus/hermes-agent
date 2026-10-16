@@ -1650,6 +1650,10 @@ export const esOverrides = {
         'Cambia de gateway desde Sesiones. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway; el trabajo en otros gateways sigue ejecutándose.',
       launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
       launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
+      hideLocalTitle: 'Ocultar este dispositivo',
+      hideLocalDesc:
+        'Mantiene el entorno local gestionado por la app fuera de la barra lateral y los selectores. Solo disponible mientras un gateway remoto es el principal.',
+      hideLocalPrimaryHint: 'Haz principal un gateway remoto para ocultar este dispositivo.',
       searchPlaceholder: 'Buscar gateways…',
       noSearchResults: 'Ningún gateway coincide con tu búsqueda.',
       loadFailed: 'No se pudieron cargar las conexiones',

@@ -1651,6 +1651,10 @@ export const deOverrides = {
         'Wechseln Sie Gateways über Sessions. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway; Arbeit auf anderen Gateways läuft weiter.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Gateway zurückkehren',
       launchModeDesc: 'Wenn deaktiviert, öffnet Sessions auf dem primären Gateway.',
+      hideLocalTitle: 'Dieses Gerät ausblenden',
+      hideLocalDesc:
+        'Hält die von der App verwaltete lokale Laufzeit aus der Seitenleiste und den Umschaltern heraus. Nur verfügbar, solange ein Remote-Gateway primär ist.',
+      hideLocalPrimaryHint: 'Lege ein Remote-Gateway als primär fest, um dieses Gerät auszublenden.',
       searchPlaceholder: 'Gateways durchsuchen…',
       noSearchResults: 'Keine Gateways entsprechen Ihrer Suche.',
       loadFailed: 'Verbindungen konnten nicht geladen werden',

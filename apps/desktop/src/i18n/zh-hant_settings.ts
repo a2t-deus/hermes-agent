@@ -1434,6 +1434,12 @@ export const zhHantSettings = {
       },
       loading: '正在載入提供方...'
     },
+    connections: {
+      hideLocalTitle: '隱藏此裝置',
+      hideLocalDesc:
+        '將應用程式管理的本機執行環境從側邊欄與切換器中移除。僅在遠端閘道為主要連線時可用。',
+      hideLocalPrimaryHint: '將遠端閘道設為主要連線以隱藏此裝置。'
+    },
     sessions: {
       loading: '正在載入已封存工作階段…',
       archivedTitle: '已封存工作階段',

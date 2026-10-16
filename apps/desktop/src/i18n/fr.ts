@@ -1654,6 +1654,10 @@ export const frOverrides = {
         "Les conversations et la liste des agents suivent la source choisie ; le backend de fenêtre géré par l'application reste sélectionné dans Paramètres → Gateway.",
       launchModeTitle: 'Au démarrage, revenir aux sessions de la dernière gateway utilisée',
       launchModeDesc: "Si cette option est désactivée, les sessions s'ouvrent sur la gateway principale.",
+      hideLocalTitle: 'Masquer cet appareil',
+      hideLocalDesc:
+        "Retire l'environnement local géré par l'app de la barre latérale et des sélecteurs. Disponible uniquement lorsqu'une gateway distante est principale.",
+      hideLocalPrimaryHint: 'Définissez une gateway distante comme principale pour masquer cet appareil.',
       searchPlaceholder: 'Rechercher des gateways…',
       noSearchResults: 'Aucune gateway ne correspond à votre recherche.',
       loadFailed: 'Impossible de charger les connexions',

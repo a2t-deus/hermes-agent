@@ -1356,6 +1356,10 @@ export const zhOverrides = {
         '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
       launchModeTitle: '启动时返回上次使用网关的会话视图',
       launchModeDesc: '关闭时，会话将在主网关上打开。',
+      hideLocalTitle: '隐藏此设备',
+      hideLocalDesc:
+        '将应用管理的本地运行时从侧边栏和切换器中移除。仅在远程网关为主连接时可用。',
+      hideLocalPrimaryHint: '将远程网关设为主连接以隐藏此设备。',
       searchPlaceholder: '搜索网关…',
       noSearchResults: '没有与搜索匹配的网关。',
       loadFailed: '无法加载连接',

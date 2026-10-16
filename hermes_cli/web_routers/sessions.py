@@ -13,6 +13,7 @@ import re
 import sqlite3
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -946,14 +947,37 @@ def _cancel_pending_for_settle(db, sid: str, profile: Optional[str]) -> None:
         _log.exception("settle: cancelling open requests for %s failed", sid)
 
 
+_LEGACY_SIDEBAR_KEYS = frozenset({'pinned', 'unread', 'profile'})
+_legacy_sidebar_logged = False
+
+
+async def _legacy_sidebar_identity(session_id: str, body: SessionRename, payload: dict, request: Request):
+    """Fork compat (D15/C6): installed Deus apps PATCH pin/read without mutation identity.
+
+    Those idempotent flags alone are admitted last-writer-wins (fork-main semantics) with a minted
+    ``request_id`` at the current revision; every other identity-less body stays upstream-strict (409).
+    Remove once the app sends identity.
+    """
+    global _legacy_sidebar_logged
+    sent = body.model_fields_set
+    if 'request_id' in sent or 'expected_revision' in sent or not payload or not sent <= _LEGACY_SIDEBAR_KEYS:
+        return body.request_id, body.expected_revision
+    snapshot = await get_session_mutation_snapshot(session_id, request, body.profile)
+    if not _legacy_sidebar_logged:
+        _legacy_sidebar_logged = True
+        _log.info("PATCH /api/sessions: admitting identity-less pin/read (legacy client, D15 shim)")
+    return str(uuid.uuid4()), snapshot['runtime_revision']
+
+
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename, request: Request):
     """Title and sidebar flags share one authoritative revision and receipt."""
     from hermes_cli.web_server_sessions import _mutate_session_request
     payload = {key: getattr(body, key) for key in ('title', 'archived', 'hidden', 'pinned', 'unread', 'settled')
                if getattr(body, key) is not None}
+    request_id, expected_revision = await _legacy_sidebar_identity(session_id, body, payload, request)
     result = await _mutate_session_request(request, body.profile, session_id,
-        request_id=body.request_id, expected_revision=body.expected_revision,
+        request_id=request_id, expected_revision=expected_revision,
         expected_generation=body.expected_generation, operation='sidebar', payload=payload)
     if body.settled:
         def _cancel(db):

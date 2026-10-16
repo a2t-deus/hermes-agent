@@ -15,7 +15,7 @@ MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
-# Notice for a process with no client endpoint (outcome ``undelivered``): nobody can ever answer, so the tool
+# Notice for a session nobody can ever answer (a hosted ``bot_room`` member, outcome ``undelivered``): the tool
 # returns at once instead of blocking for ``clarify_timeout``.
 NO_ANSWERER_NOTICE = "No one can answer here; state your question in your reply and stop."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
