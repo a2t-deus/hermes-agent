@@ -213,7 +213,9 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'runtime_revision', 'id'),
             ('+', 'runtime_generation', 'runtime_revision'),
         )),
-        ('32 2026-09-30T18:40Z 8b2b3858b7', (('+', 'settled_at', 'last_read_at'),)),
+        # Fork (a2t-deus) settled shelf, declared last: every pre-fork store gets it appended at the end, so a
+        # fresh store's layout is the upgraded one and salvage never has to tell two all-NULL tails apart.
+        ('32 2026-09-30T18:40Z 8b2b3858b7', (('+', 'settled_at', 'tool_names'),)),
         ),
     ),
     "messages": _TableHistory(

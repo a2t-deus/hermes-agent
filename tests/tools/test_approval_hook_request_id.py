@@ -1,8 +1,8 @@
-"""Queued approval hooks carry the queue ``request_id`` a client answers with.
+"""A queued approval's ``on_human_input_request`` carries the queue id a client answers with.
 
 A notifier plugin (phone push) needs the id ``approval.respond`` resolves by; without it the answer can
-never reach the prompt. The pre hook, the post hook, and the queued entry must agree, and a coalesced
-follower reports its leader's id.
+never reach the prompt. It rides the human-input hook as ``answer_request_id`` (the pre/post approval
+payload stays identical to the classic CLI's), and a coalesced follower opens no second ask.
 """
 
 from tools import approval as mod
@@ -16,10 +16,11 @@ def _hooks(monkeypatch) -> list[tuple[str, dict]]:
     mod._gateway_queues.clear()
     hooks: list[tuple[str, dict]] = []
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: hooks.append((name, kw)))
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kw: hooks.append((name, kw)))
     return hooks
 
 
-def test_hooks_carry_the_id_a_client_resolves_with(monkeypatch):
+def test_human_input_hook_carries_the_id_a_client_resolves_with(monkeypatch):
     hooks = _hooks(monkeypatch)
     sent: list[dict] = []
 
@@ -32,12 +33,13 @@ def test_hooks_carry_the_id_a_client_resolves_with(monkeypatch):
     decision = wait_mod._await_gateway_decision(SESSION_KEY, sent.append, APPROVAL)
 
     assert decision["choice"] == "once"
-    (pre_name, pre), (post_name, post) = hooks
-    assert (pre_name, post_name) == ("pre_approval_request", "post_approval_response")
-    assert pre["request_id"] == post["request_id"] == sent[0]["request_id"]
+    (ask,) = [kw for name, kw in hooks if name == "on_human_input_request"]
+    assert ask["kind"] == "approval" and ask["answer_request_id"] == sent[0]["request_id"]
+    assert all("request_id" not in kw for name, kw in hooks if name.endswith("_approval_request")
+               or name.endswith("_approval_response"))
 
 
-def test_coalesced_follower_reports_the_leaders_id(monkeypatch):
+def test_coalesced_follower_opens_no_second_ask(monkeypatch):
     hooks = _hooks(monkeypatch)
     leader = wait_mod._ApprovalEntry(APPROVAL)
     mod._gateway_queues[SESSION_KEY] = [leader]
@@ -50,5 +52,5 @@ def test_coalesced_follower_reports_the_leaders_id(monkeypatch):
     decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
 
     assert decision["choice"] == "session" and decision.get("coalesced")
-    assert [kw["request_id"] for _, kw in hooks] == [leader.data["request_id"]] * 2
+    assert [name for name, _ in hooks] == ["pre_approval_request", "post_approval_response"]
     mod._gateway_queues.clear()

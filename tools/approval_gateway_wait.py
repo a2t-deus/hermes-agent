@@ -179,15 +179,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if leader is None:
                 _enqueue()
                 break
-        # A follower reports the leader's queue id: that is the prompt a client answers.
-        payload["request_id"] = leader.data["request_id"]
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
-
-    # The queue id a client answers with (``approval.respond`` / the server→client ``approval`` request),
-    # so hook observers can route an answer back to this exact prompt.
-    payload["request_id"] = entry.data["request_id"]
 
     def _drop_entry(state: str) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
@@ -225,7 +219,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         return choice
 
     from tools.human_input_hooks import human_input_request
-    with human_input_request("approval", prompt=payload["command"], session_key=session_key) as human:
+    # ``answer_request_id``: the queue id a client answers with (``approval.respond`` / the server→client
+    # ``approval`` request), so an observer can route an answer back to this exact prompt. Kept off the
+    # pre/post approval payload, which stays identical to the classic CLI's.
+    with human_input_request("approval", prompt=payload["command"], session_key=session_key,
+                             answer_request_id=entry.data["request_id"]) as human:
         # Plugins hear about the request before the gateway does (real-time observers).
         _ctx._fire_approval_hook("pre_approval_request", **payload)
         # Bridges sync agent thread → async gateway.
