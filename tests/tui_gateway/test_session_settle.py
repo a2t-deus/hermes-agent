@@ -291,6 +291,7 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
     cancels = []
     monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append((event, payload)))
     monkeypatch.setattr(srv, "_clarify_timeout_seconds", lambda: 30)
+    monkeypatch.setattr(srv, "_ws_client_host", True)  # the serve: a clarify waits for a client
 
     _seed(db, "stored-key")
     sid = "live-1"
@@ -298,10 +299,8 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
     box = {}
 
     def ask():
-        cb = lambda q, c, multi_select=False, request_id=None: srv._clarify_block(  # noqa: E731
-            sid, q, c, multi_select=multi_select, request_id=request_id)
-        box["result"] = clarify_tool("Ship it?", choices=["yes", "no"], callback=cb,
-                                     session_id="stored-key", platform="serve")
+        cb = lambda questions, request_id=None: srv._clarify_block(sid, questions, request_id=request_id)  # noqa: E731
+        box["result"] = clarify_tool([{"question": "Ship it?", "choices": ["yes", "no"]}], callback=cb)
 
     thread = threading.Thread(target=ask, daemon=True)
     try:
@@ -319,9 +318,10 @@ def test_settle_cancels_open_clarify_with_cancelled_outcome(db, monkeypatch):
         with server_requests._lock:
             server_requests._open.pop(req.id, None)  # only ours: the map is process-global
 
-    assert json.loads(box["result"])["user_response"] == ""  # dismissed, the agent continues
-    post = [kw for name, kw in recorder.calls if name == "post_clarify_response"]
-    assert [p["outcome"] for p in post] == ["cancelled"]
+    result = json.loads(box["result"])  # dismissed, the agent continues
+    assert result["outcome"] == "cancelled" and [r["user_response"] for r in result["responses"]] == [None]
+    resolved = [kw for name, kw in recorder.calls if name == "on_human_input_resolved"]
+    assert [p["outcome"] for p in resolved] == ["cancelled"]
     assert ("request.cancel", {"id": req.id, "method": "clarify", "reason": "settled"}) in cancels
     assert _settled_at(db, "stored-key") is not None
 
@@ -368,7 +368,8 @@ def test_settle_counts_an_approval_with_an_open_card_once(db, monkeypatch):
     _seed(db, "appr-key")
     sid = "live-appr-card"
     srv._sessions[sid] = {"session_key": "appr-key", "history": [], "running": True}
-    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+    cancels = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
     monkeypatch.setattr(_approval, "_get_approval_config", lambda: {"gateway_timeout": 30}, raising=False)
     thread = threading.Thread(target=lambda: _approval._await_gateway_decision(
         "appr-key", lambda data: None, {"command": "rm -rf /tmp/x", "description": "d"}, surface="gateway"),
@@ -396,7 +397,8 @@ def test_settle_counts_an_approval_with_an_open_card_once(db, monkeypatch):
             for req in (card, locals().get("other")):
                 if req is not None:
                     server_requests._open.pop(req.id, None)
-    assert card.settle_reason == "settled"
+    assert card.event.is_set()
+    assert {"id": card.id, "method": "approval", "reason": "settled"} in cancels
 
 
 def test_set_settled_live_id_respects_the_requested_profile(db, monkeypatch, tmp_path):
@@ -453,6 +455,14 @@ class TestSettledRestFlag:
         finally:
             database.close()
 
+    def _patch(self, body):
+        """PATCH with the mutation identity the fenced sidebar write requires (upstream session authority)."""
+        snapshot = self.client.get("/api/sessions/s1/mutation-snapshot").json()
+        self._seq = getattr(self, "_seq", 0) + 1
+        return self.client.patch("/api/sessions/s1", json={
+            **body, "request_id": f"settle-test-{self._seq}", "expected_revision": snapshot["runtime_revision"],
+            **({} if snapshot["runtime_generation"] is None else {"expected_generation": snapshot["runtime_generation"]})})
+
     def _row(self):
         database = SessionDB()
         try:
@@ -461,7 +471,7 @@ class TestSettledRestFlag:
             database.close()
 
     def test_patch_settled_true_settles_and_unpins(self):
-        resp = self.client.patch("/api/sessions/s1", json={"settled": True})
+        resp = self._patch({"settled": True})
         assert resp.status_code == 200, resp.text
         assert resp.json()["settled"] is True
         row = self._row()
@@ -479,13 +489,13 @@ class TestSettledRestFlag:
         with server_requests._lock:
             server_requests._open[req.id] = req
         try:
-            resp = self.client.patch("/api/sessions/s1", json={"settled": True})
+            resp = self._patch({"settled": True})
             assert resp.status_code == 200, resp.text
         finally:
             srv._sessions.pop("live-s1", None)
             with server_requests._lock:
                 server_requests._open.pop(req.id, None)
-        assert req.event.is_set() and req.settle_reason == "settled"
+        assert req.event.is_set()
         assert {"id": req.id, "method": "clarify", "reason": "settled"} in cancels
 
     def test_patch_settled_default_profile_on_custom_home_cancels_launch_requests(self, monkeypatch):
@@ -495,29 +505,31 @@ class TestSettledRestFlag:
         from tui_gateway import server_requests
 
         monkeypatch.setattr(srv, "_hermes_home", get_hermes_home())
-        monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: None)
+        cancels = []
+        monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
         srv._sessions["live-s1"] = {"session_key": "s1", "history": [], "running": True}
         req = server_requests.ServerRequest("live-s1", "clarify", {"question": "q", "choices": None})
         with server_requests._lock:
             server_requests._open[req.id] = req
         try:
-            resp = self.client.patch("/api/sessions/s1", json={"settled": True, "profile": "default"})
+            resp = self._patch({"settled": True, "profile": "default"})
             assert resp.status_code == 200, resp.text
         finally:
             srv._sessions.pop("live-s1", None)
             with server_requests._lock:
                 server_requests._open.pop(req.id, None)
         assert self._row()["settled_at"] is not None
-        assert req.event.is_set() and req.settle_reason == "settled"
+        assert req.event.is_set()
+        assert {"id": req.id, "method": "clarify", "reason": "settled"} in cancels
 
     def test_patch_settled_does_not_start_multi_profile_hosting(self, monkeypatch):
         monkeypatch.setattr(srv, "_profile_home", lambda profile: pytest.fail("mutating profile resolver"))
-        resp = self.client.patch("/api/sessions/s1", json={"settled": True})
+        resp = self._patch({"settled": True})
         assert resp.status_code == 200, resp.text
 
     def test_patch_settled_false_unsettles(self):
-        self.client.patch("/api/sessions/s1", json={"settled": True})
-        resp = self.client.patch("/api/sessions/s1", json={"settled": False})
+        self._patch({"settled": True})
+        resp = self._patch({"settled": False})
         assert resp.status_code == 200, resp.text
         assert self._row()["settled_at"] is None
         rows = self.client.get("/api/sessions?limit=100").json()["sessions"]

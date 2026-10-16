@@ -42,23 +42,26 @@ def _ask(monkeypatch, sid, transport, *, timeout=0.0):
     started = time.monotonic()
     result = json.loads(clarify_tool(
         [{"question": "Which env?", "choices": ["staging", "prod"]}],
-        callback=lambda questions, request_id=None: server._clarify_block(sid, questions, request_id=request_id),
-        session_id=f"key-{sid}", platform="serve"))
-    return result, frames, [kw["outcome"] for name, kw in hooks if name == "post_clarify_response"], \
-        time.monotonic() - started
+        callback=lambda questions, request_id=None: server._clarify_block(sid, questions, request_id=request_id)))
+    return result, frames, hooks, time.monotonic() - started
+
+
+def _resolved(hooks):
+    return [kw["outcome"] for name, kw in hooks if name == "on_human_input_resolved"]
 
 
 def test_process_without_a_client_endpoint_returns_no_answerer_immediately(monkeypatch):
     """`hermes gateway run` hosting a Group Chat member: no WS endpoint, stdout is a log sink."""
     _host(monkeypatch, ws_client_host=False)
-    result, frames, post, elapsed = _ask(monkeypatch, "gateway-room-member", server._stdio_transport, timeout=3600)
+    result, frames, hooks, elapsed = _ask(monkeypatch, "gateway-room-member", server._stdio_transport, timeout=3600)
 
     assert elapsed < 1.0
     assert frames == []  # nothing was sent to a client that does not exist
-    assert result["outcome"] == "no_answerer"
+    assert result["outcome"] == "undelivered"  # upstream's vocabulary for "nobody can answer" (D5)
     assert result["notice"] == NO_ANSWERER_NOTICE
     assert [r["status"] for r in result["responses"]] == ["unanswered"]
-    assert post == ["no_answerer"]  # observers clear the ask
+    assert [name for name, _ in hooks] == ["on_human_input_request", "on_human_input_resolved"]
+    assert _resolved(hooks) == ["undelivered"]  # observers clear the ask
 
 
 @pytest.mark.parametrize("label, make_transport, ws_client_host, stdio_rpc", [
@@ -70,11 +73,11 @@ def test_process_without_a_client_endpoint_returns_no_answerer_immediately(monke
 ])
 def test_client_host_always_sends_the_request(monkeypatch, label, make_transport, ws_client_host, stdio_rpc):
     _host(monkeypatch, ws_client_host=ws_client_host, stdio_rpc=stdio_rpc)
-    result, frames, post, _ = _ask(monkeypatch, label, make_transport())
+    result, frames, hooks, _ = _ask(monkeypatch, label, make_transport())
 
     assert [f["method"] for f in frames] == ["clarify"]
     assert result["outcome"] == "timed_out"
-    assert post == ["timeout"]
+    assert _resolved(hooks) == ["timed_out"]
 
 
 def test_serve_question_survives_reconnect_and_is_answered_from_the_replay(monkeypatch):
@@ -82,7 +85,7 @@ def test_serve_question_survives_reconnect_and_is_answered_from_the_replay(monke
     _host(monkeypatch, ws_client_host=True)
     outcome = {}
     asker = threading.Thread(target=lambda: outcome.update(
-        zip(("result", "frames", "post", "elapsed"), _ask(monkeypatch, "reconnecting", _ClosedPeer(), timeout=10))))
+        zip(("result", "frames", "hooks", "elapsed"), _ask(monkeypatch, "reconnecting", _ClosedPeer(), timeout=10))))
     asker.start()
     deadline = time.monotonic() + 5
     while not server_requests.open_requests("reconnecting") and time.monotonic() < deadline:
@@ -96,4 +99,7 @@ def test_serve_question_survives_reconnect_and_is_answered_from_the_replay(monke
 
     assert outcome["result"]["outcome"] == "submitted"
     assert [r["user_response"] for r in outcome["result"]["responses"]] == ["prod"]
-    assert outcome["post"] == ["answered"]
+    assert _resolved(outcome["hooks"]) == ["submitted"]
+    # Contract C3: the id an observer (phone push) answers with is the replayed request's id.
+    (request,) = [kw for name, kw in outcome["hooks"] if name == "on_human_input_request"]
+    assert request["answer_request_id"] == replayed[0]["id"] != request["request_id"]
