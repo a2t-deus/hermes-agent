@@ -126,6 +126,27 @@ def test_reimport_after_delete_is_refused_explicitly_then_runs_once_the_tombston
     assert _row(be, key) is not None
 
 
+
+def test_a_reimported_copy_under_a_new_id_deletes(topology):
+    """F5 r5 Finding A: the copy keeps the WS stamp it was exported with, but the import claimed it as the
+    REST principal; the delete must present that claiming form (403 permission_denied before)."""
+    be, http, _ = topology
+    _, _, key, _ = _serve_chat(be, 'reid')
+    copy = http.get(f'/api/sessions/{key}/export').json()
+    new = f'_verify-reid-{uuid.uuid4().hex[:8]}'
+    copy.update(id=new, title=new)
+    for message in copy.get('messages') or []:
+        message['session_id'] = new
+    imported = http.post('/api/sessions/import', json={'request_id': 'reid-import', 'expected_revision': 0,
+                                                         'sessions': [copy]})
+    assert imported.status_code == 200, imported.text
+    assert _row(be, new)['user_id'] == _row(be, key)['user_id'], 'the copy keeps the stamped owner'
+    response = http.delete(f'/api/sessions/{new}', params={
+        'request_id': 'reid-delete', 'expected_revision': _revision(http, new),
+        'expected_generation': _generation(http, new)})
+    assert response.status_code == 200, (response.text, be.logs(20))
+    assert _row(be, new) is None
+
 def _bulk_binding(home, operation, params, subject='auth:v1:probe'):
     digest = hashlib.sha256(json.dumps(params, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {'profile_id': str(home), 'subject': subject, 'operation': operation, 'params_sha256': digest}

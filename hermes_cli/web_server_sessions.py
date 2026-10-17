@@ -201,7 +201,11 @@ def _live_store_owner(profile):
 def _row_owner_subject(request, profile, session_id, actor):
     """The form of this login the target row carries: the serve's WS stamps its chats
     ``<provider>:<user id>`` (``tui_gateway/session_transports.py``), its REST principal is the
-    namespaced ``auth:v1:[...]`` subject. Both name the same authenticated login, nothing more."""
+    namespaced ``auth:v1:[...]`` subject. Both name the same authenticated login, nothing more. A row's
+    cold-history claim (an import's: a re-id'd copy keeps the stamp it was exported with) names the
+    form that claimed it, and the owner matches that claim exactly, so that form wins."""
+    import json
+    from hermes_state_mutation_binding import history_binding
     session = getattr(request.state, 'session', None)
     if session is None:
         return actor.subject
@@ -209,8 +213,13 @@ def _row_owner_subject(request, profile, session_id, actor):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         row = db.get_session(session_id)
+        with db._read_ctx() as conn:
+            claim = history_binding(conn, session_id)
     finally:
         db.close()
+    claimed = json.loads(claim)[1] if claim else None
+    if claimed in (stamp, actor.subject):
+        return claimed
     return stamp if row is not None and row.get('user_id') == stamp else actor.subject
 
 
