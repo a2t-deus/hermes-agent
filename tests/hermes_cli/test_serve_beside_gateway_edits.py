@@ -236,6 +236,15 @@ def test_tickets_are_single_use_and_bound_to_their_exact_edit(topology):
     reply = _private(home, 'delegated-edit', {**binding, 'ticket': mint(),
                                               'mutation': mutation('t-5', operation='delete')})
     assert reply['result'] == {'refused': 'invalid_params'}, reply
+    _, _, other, _ = _serve_chat(be, 'tickets-other')
+    audit = f'operation=sidebar session={key} '
+    log = be.hermes_home / 'logs' / 'agent.log'
+    before = log.read_text(errors='replace').count(audit)
+    reply = _private(home, 'delegated-edit', {**binding, 'ticket': mint(),
+                                              'mutation': mutation('t-6', session_id=other)})
+    assert reply['result'] == {'refused': 'invalid_params'}, reply
+    assert not _row(be, other)['pinned']
+    assert log.read_text(errors='replace').count(audit) == before, 'the owner acted on a mutation outside its ticket'
 
 
 def test_ticket_is_never_redeemed_on_a_network_listener(topology):
