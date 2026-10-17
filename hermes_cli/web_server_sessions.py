@@ -184,7 +184,7 @@ _REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found
 
 
 def _live_store_owner(profile):
-    """``(home, endpoint)`` of the ready gateway serving this standalone serve's store, else None.
+    """The home of a ready gateway serving this standalone serve's store, else None.
 
     The host's gateway is a separate process here; its held lock is what the offline path's
     exclusive maintenance refuses, so its edits belong to that owner. Discovery only, never a start.
@@ -195,26 +195,43 @@ def _live_store_owner(profile):
 
     home = (Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent).resolve()
     found = discover_gateway_endpoint(home)
-    return (home, found.endpoint) if found.state == 'ready' and found.endpoint is not None else None
+    return home if found.state == 'ready' and found.endpoint is not None else None
 
 
-async def _mutate_through_owner(home, endpoint, params):
-    """One ``session.mutate`` on the owner, as ``hermes sessions prune`` sends ``session.prune``."""
-    from fastapi import HTTPException
-    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    # The ticket is minted for this profile's home, not the serve's launch profile.
-    token = set_hermes_home_override(home)
+def _row_owner_subject(request, profile, session_id, actor):
+    """The form of this login the target row carries: the serve's WS stamps its chats
+    ``<provider>:<user id>`` (``tui_gateway/session_transports.py``), its REST principal is the
+    namespaced ``auth:v1:[...]`` subject. Both name the same authenticated login, nothing more."""
+    session = getattr(request.state, 'session', None)
+    if session is None:
+        return actor.subject
+    stamp = f"{str(session.provider).strip()}:{str(session.user_id).strip()}"
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
-        async with connect_gateway(endpoint) as client:
-            return await client.rpc('session.mutate', **params)
-    except GatewayRPCError as exc:
-        raise HTTPException(status_code=_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
-    except GatewayClientError as exc:
-        raise HTTPException(status_code=503, detail='session_owner_unavailable') from exc
+        row = db.get_session(session_id)
     finally:
-        reset_hermes_home_override(token)
+        db.close()
+    return stamp if row is not None and row.get('user_id') == stamp else actor.subject
+
+
+def _mutate_through_owner(home, subject, params):
+    """Fork (D19): the edit runs on the owner as this request's principal, over its private socket.
+
+    A ticket bound to (profile, subject, session, operation) is minted and spent on the owner-only
+    control socket (``gateway/session_delegated_edit.py``); the owner keeps every fence.
+    """
+    from fastapi import HTTPException
+    from gateway.session_hosted_transport import owner_request
+
+    binding = {'subject': subject, 'session_id': params['session_id'], 'operation': params['operation']}
+    ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
+    answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, 'mutation': params})
+    if 'refused' not in answer:
+        return answer['result']
+    reason = answer['refused']
+    if answer.get('errors'):
+        raise HTTPException(status_code=400, detail={'errors': answer['errors']})
+    raise HTTPException(status_code=_REFUSAL_STATUS.get(reason, 409), detail=answer.get('detail') or reason)
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,
@@ -240,7 +257,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None and (owner := await asyncio.to_thread(_live_store_owner, profile)) is not None:
-            result = await _mutate_through_owner(*owner, params)
+            subject = await asyncio.to_thread(_row_owner_subject, request, profile, session_id, actor)
+            result = await asyncio.to_thread(_mutate_through_owner, owner, subject, params)
         elif authority is None:
             result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
