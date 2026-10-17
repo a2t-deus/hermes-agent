@@ -4458,8 +4458,8 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
 
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None, runner=None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+    by sessions.min_interval_hours (VACUUM additionally by its own throttles), then the fork's
+    ungated route sweep. Opens its own SessionDB — SQLite connections are thread-bound.
 
     Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
@@ -4470,8 +4470,6 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
-        return
     _adb = acquire()
     try:
         if _sess_cfg.get("auto_archive", False):
@@ -4485,8 +4483,10 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                 sessions_dir=_profile_sessions_dir(launch))
-            from gateway.session_routed_delete import retire_routes_naming_deleted  # fork (D27): launch-home routes
-            retire_routes_naming_deleted(_adb, getattr(runner, "session_store", None))
+        # Fork (D27/D29): after any prune, and whatever auto_prune says, so a start repairs a route a crash
+        # or an offline CLI delete left naming a deleted named-profile row.
+        from gateway.session_routed_delete import retire_routes_naming_deleted
+        retire_routes_naming_deleted(_adb, getattr(runner, "session_store", None))
     finally:
         release_or_close(_adb)
 
