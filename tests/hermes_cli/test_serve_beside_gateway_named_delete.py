@@ -165,3 +165,10 @@ def test_a_crash_between_the_phases_leaves_the_row_without_a_route(named):
     # The chat itself goes on: its next message starts a fresh session, never the deleted one.
     assert _routed_chat(be, 'crash') != sid
 
+
+def test_ws_session_delete_leaves_no_stale_route(named):
+    """The Deus app's path: the serve's own ``delete_session`` on the named profile's store."""
+    be, _ = named
+    sid = _routed_chat(be, 'ws')
+    assert be.connect('ws-delete').call('session.delete', session_id=sid, profile=_PROFILE) == {'deleted': sid}
+    assert not _row(be, sid) and _routes_naming(be, sid) == []

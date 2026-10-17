@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork D27: WS session.delete of a named-profile chat retires the launch-home routes naming it (one call + its import; logic in gateway/session_routed_delete.py)
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server
@@ -1194,6 +1195,8 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
+            from gateway.session_routed_delete import retire_routes_before_direct_delete  # fork (D27)
+            retire_routes_before_direct_delete(db, None if profile_home is None else _get_db(), target)
             deleted = delete_chat(db, target, lambda: db.delete_session(
                 target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
         except SessionActiveWriteGuardError:

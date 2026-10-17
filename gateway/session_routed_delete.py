@@ -81,3 +81,20 @@ def admits_delete(authority, principal_id, session_id, request_id, targets):
                            (_key(principal_id, session_id, request_id),)).fetchone()
     return row is not None and json.loads(row[0])['ids'] == sorted(targets)
 
+
+def retire_routes_before_direct_delete(db, routing, session_id):
+    """Phase 1 for the serve's WS ``session.delete`` (a direct ``delete_session`` writer) of a named
+    profile's row: the routes of the scope its retirement fences, skipped when that delete would find
+    no row or refuse an active write guard. The owner's in-memory index is its own; the fence marker
+    keeps its next save from writing these routes back."""
+    if routing is None or routing.db_path == db.db_path:
+        return
+    from hermes_state_local import owned_lineage_ids
+    from hermes_state_sessions import _collect_delegate_child_ids
+    with db._read_ctx() as conn:
+        if conn.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone() is None:
+            return
+        scope = owned_lineage_ids(conn, session_id)
+        if db._guarded_ids(conn, [*scope, *_collect_delegate_child_ids(conn, scope)]):
+            return
+    retire_foreign_routes(routing, scope)
