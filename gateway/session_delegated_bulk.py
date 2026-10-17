@@ -111,6 +111,8 @@ async def _apply(authority, binding, params):
     if operation != 'owner_backfill':
         named = set(authority.sessions)
         store = getattr(authority.runner, 'session_store', None)
+        from gateway.session_routed_delete import retire_routes_naming_deleted  # fork (D27): launch-home routes
+        await asyncio.to_thread(retire_routes_naming_deleted, authority.db, store)
         if store is not None:
             with store._lock:
                 named.update(entry.session_id for entry in store._entries.values())

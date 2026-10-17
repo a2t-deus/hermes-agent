@@ -105,3 +105,23 @@ def retire_routes_before_direct_delete(db, routing, session_id):
             return
     retire_foreign_routes(routing, scope)
 
+
+def retire_routes_naming_deleted(db, store):
+    """After a delete *db* committed beside a multiplexed owner (bulk delete, prunes, housekeeping): retire
+    every owner route, durable or in memory, naming a row *db* deleted (gone, its retirement marker kept).
+    Marker-driven, so a later pass also repairs a route a crash right after the delete left behind."""
+    routing = _foreign_routing_db(db, store)
+    if routing is None:
+        return
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, entry_session_id
+    with routing._read_ctx() as conn:
+        routed = {entry_session_id(row[0]) for row in conn.execute('SELECT entry_json FROM gateway_routing')}
+    with store._lock:
+        routed.update(entry.session_id for entry in store._entries.values())
+    with db._read_ctx() as conn:
+        gone = sorted(sid for sid in routed if sid
+                      and conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone()
+                      and not conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone())
+    if gone:
+        retire_foreign_routes(routing, gone)
+        store.retire_runtime_sessions(gone)

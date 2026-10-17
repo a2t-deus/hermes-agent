@@ -15,6 +15,7 @@ import json
 import socket
 import sqlite3
 import threading
+import time
 
 import pytest
 
@@ -204,3 +205,61 @@ def _write(be, sql, args):
     finally:
         con.close()
 
+
+def _aged(be, chat, start):
+    """A routed chat, ended with a start time nothing else has (a prune window selects exactly it)."""
+    sid = _routed_chat(be, chat)
+    _write(be, "UPDATE sessions SET started_at = ?, ended_at = ?, archived = 0, pinned = 0, "
+               "end_reason = '_verify-aged' WHERE id = ?", (start, start + 1, sid))
+    return sid
+
+
+def _gone(be, sid):
+    assert not _row(be, sid), 'the row is deleted'
+    assert _routes_naming(be, sid) == [], 'no owner route names the deleted id'
+
+
+def test_bulk_delete_leaves_no_route_naming_the_deleted_chat(named):
+    be, http = named
+    sid = _routed_chat(be, 'bulk')
+    response = http.post('/api/sessions/bulk-delete', json={'ids': [sid], 'profile': _PROFILE})
+    assert (response.status_code, response.json().get('deleted')) == (200, 1), (response.text, be.logs(20))
+    _gone(be, sid)
+    assert _routed_chat(be, 'bulk') != sid, 'the chat goes on in a fresh session'
+
+
+def test_delete_empty_leaves_no_route_naming_the_deleted_chat(named):
+    be, http = named
+    sid = _routed_chat(be, 'empty')
+    _write(be, 'UPDATE sessions SET message_count = 0, ended_at = ?, archived = 0, title = NULL WHERE id = ?',
+           (time.time() - 60, sid))
+    _write(be, 'DELETE FROM messages WHERE session_id = ?', (sid,))
+    response = http.delete('/api/sessions/empty', params={'profile': _PROFILE})
+    assert response.status_code == 200 and response.json()['deleted'] >= 1, (response.text, be.logs(20))
+    _gone(be, sid)
+
+
+def test_rest_prune_leaves_no_route_naming_the_pruned_chat(named):
+    be, http = named
+    start = 978307200  # 2001: only this chat starts there
+    sid = _aged(be, 'prune', start)
+    window = {'started_after': start - 0.5, 'started_before': start + 0.5, 'include_archived': True,
+              'profile': _PROFILE}
+    response = http.post('/api/sessions/prune', json=window)
+    assert (response.status_code, response.json().get('removed')) == (200, 1), (response.text, be.logs(20))
+    _gone(be, sid)
+
+
+def test_owner_session_prune_leaves_no_route_naming_the_pruned_chat(named):
+    """``hermes sessions prune -p <profile>`` beside a live owner: the owner's ``session.prune``."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.sessions_owner import owner_prune
+    be, _ = named
+    start = 978307300
+    sid = _aged(be, 'cliprune', start)
+    found = discover_gateway_endpoint((be.hermes_home / 'profiles' / _PROFILE).resolve())
+    assert found.state == 'ready', found
+    result = owner_prune(found.endpoint, filters={'older_than_days': None, 'started_after': start - 0.5,
+                                                  'started_before': start + 0.5, 'archived': None})
+    assert result['deleted'] == 1, result
+    _gone(be, sid)

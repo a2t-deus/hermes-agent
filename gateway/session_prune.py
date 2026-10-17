@@ -57,5 +57,7 @@ async def _apply(authority, filters, never_active):
             authority.db.prune_sessions, sessions_dir=sessions_dir, exclude_active_write_guards=True,
             deleted_ids=deleted_ids, **filters)
         result = {'deleted': deleted}
+    from gateway.session_routed_delete import retire_routes_naming_deleted  # fork (D27): launch-home routes
+    await asyncio.to_thread(retire_routes_naming_deleted, authority.db, getattr(authority.runner, 'session_store', None))
     retire_live_sessions(authority, deleted_ids)
     return result

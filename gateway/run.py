@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fork D27: the maintenance prune of a named profile retires the launch-home routes naming its rows (one call + its import; logic in gateway/session_routed_delete.py)
 """Gateway runner - entry point for messaging platform integrations.
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).
@@ -4455,7 +4456,7 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
     return home / "sessions"
 
 
-def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
+def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None, runner=None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
     SessionDB — SQLite connections are thread-bound.
@@ -4484,6 +4485,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                 sessions_dir=_profile_sessions_dir(launch))
+            from gateway.session_routed_delete import retire_routes_naming_deleted  # fork (D27): launch-home routes
+            retire_routes_naming_deleted(_adb, getattr(runner, "session_store", None))
     finally:
         release_or_close(_adb)
 
@@ -4580,7 +4583,7 @@ def _start_gateway_housekeeping(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
             lambda _launch=_launch_sessions_dir(getattr(runner, "config", None)):
-                _housekeeping_state_db_maintenance(_launch))),
+                _housekeeping_state_db_maintenance(_launch, runner))),
         # Due-gated inside: the first tick after startup runs an overdue check, not tick 60.
         # Per served profile: plugins dir, last-run marker and plugins.auto_apply are all the
         # profile's own (get_hermes_home()/load_config_readonly() bind to the scope).
