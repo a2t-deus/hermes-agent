@@ -199,7 +199,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     if operation == 'delete':
         from gateway.session_routed_delete import retire_routes_first  # fork (D27): phase 1, another store
-        await asyncio.to_thread(retire_routes_first, authority, principal_id, params)
+        await asyncio.to_thread(retire_routes_first, authority, fields, authorize_write)
     applied = False
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:

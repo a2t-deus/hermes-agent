@@ -21,7 +21,7 @@ import pytest
 from tests.e2e.core.chaos import _gateway_fake_platform as fake_platform
 from tests.e2e.core.chaos._gateway_harness import PLUGIN_MANIFEST
 from tests.e2e.core.terminal._gateway_client import poll_until
-from tests.hermes_cli.test_serve_beside_gateway_edits import _CONFIG, run_topology
+from tests.hermes_cli.test_serve_beside_gateway_edits import _CONFIG, _USER, _private, run_topology
 
 pytestmark = pytest.mark.platforms('linux', 'macos')
 
@@ -172,3 +172,35 @@ def test_ws_session_delete_leaves_no_stale_route(named):
     sid = _routed_chat(be, 'ws')
     assert be.connect('ws-delete').call('session.delete', session_id=sid, profile=_PROFILE) == {'deleted': sid}
     assert not _row(be, sid) and _routes_naming(be, sid) == []
+
+
+def test_a_delete_phase_two_refuses_on_its_parameters_keeps_the_route(named):
+    """Security r7 L1, over the owner's ``delegated-edit`` (the WS ``session.mutate`` path): a delete
+    phase 2 refuses on a non-empty payload or a bool revision never strips the chat's route first."""
+    be, http = named
+    home = (be.hermes_home / 'profiles' / _PROFILE).resolve()
+    for name, bad in (('payload', {'payload': {'x': 1}}), ('boolrev', {'expected_revision': True})):
+        sid = _routed_chat(be, f'bad-{name}')
+        # Revision 1, so the bool equals it: only phase 2's ``type(...) is int`` refuses it.
+        _write(be, 'UPDATE sessions SET runtime_revision = 1 WHERE id = ?', (sid,))
+        snapshot = http.get(f'/api/sessions/{sid}/mutation-snapshot', params={'profile': _PROFILE}).json()
+        binding = {'profile_id': str(home), 'subject': f'basic:{_USER}', 'session_id': sid, 'operation': 'delete'}
+        minted = _private(be.hermes_home, 'delegated-edit-ticket', binding)
+        assert minted['ok'], minted
+        mutation = {'session_id': sid, 'request_id': f'_verify-bad-{name}', 'operation': 'delete', 'payload': {},
+                    'expected_revision': 1, 'expected_generation': snapshot['runtime_generation'], **bad}
+        reply = _private(be.hermes_home, 'delegated-edit',
+                         {**binding, 'ticket': minted['result']['ticket'], 'mutation': mutation})
+        assert reply['result'] == {'refused': 'invalid_params'}, reply
+        assert _row(be, sid) and _routes_naming(be, sid), f'{name}: the refused delete kept the chat and its route'
+
+
+def _write(be, sql, args):
+    """Shape a fixture row in the named profile's store (as the bulk topology tests do)."""
+    con = sqlite3.connect(str(be.hermes_home / 'profiles' / _PROFILE / 'state.db'), timeout=30)
+    try:
+        con.execute(sql, args)
+        con.commit()
+    finally:
+        con.close()
+

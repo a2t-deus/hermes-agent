@@ -42,32 +42,38 @@ def retire_foreign_routes(routing, ids, record=None):
     routing._execute_write(write)
 
 
-def retire_routes_first(authority, principal_id, params):
-    """Phase 1 of a canonical delete (off the loop), before its fenced commit. Phase 2's own refusals
-    (stale revision/generation, live work) answer here first, so a delete that would be refused does not
-    cost a live chat its route; a request that already holds a receipt is phase 2's to replay."""
+class _Admitted(Exception):
+    """Phase 2's own checks admitted the delete; raised at its last one, so that write rolls back."""
+
+
+def retire_routes_first(authority, fields, authorize_write=None):
+    """Phase 1 of a canonical delete (off the loop), before its fenced commit. Phase 2's refusals answer
+    here first, from phase 2's own code: ``mutate_runtime_session`` with these exact *fields* (parameters,
+    epoch, receipt replay, row, revision, generation), *authorize_write* and the delete's idle rule, rolled
+    back at its end. So a delete phase 2 would refuse never costs a live chat its route, and a request
+    that already holds a receipt is phase 2's to replay."""
     store = getattr(authority.runner, 'session_store', None)
     routing = _foreign_routing_db(authority.db, store)
-    session_id, request_id = params['session_id'], params['request_id']
     if routing is None:
         return
-    from hermes_state_mutation_guards import delete_targets, require_idle
-    from hermes_state_mutation_retirement import has_mutation_receipt
-    from hermes_state_runtime import RuntimeStoreError
-    if has_mutation_receipt(authority.db, principal_id, session_id, request_id):
-        return
-    with authority.db._read_ctx() as conn:
-        row = conn.execute('SELECT runtime_revision, runtime_generation FROM sessions WHERE id=?',
-                           (session_id,)).fetchone()
-        if row is None:
-            return  # the delete's own not_found
-        if row[0] != params['expected_revision']:
-            raise RuntimeStoreError('revision_conflict')
-        if row[1] != params.get('expected_generation'):
-            raise RuntimeStoreError('stale_generation')
-        targets = sorted(delete_targets(conn, session_id))
-        require_idle(authority.db, conn, targets)
-    retire_foreign_routes(routing, targets, (_key(principal_id, session_id, request_id), targets))
+    from hermes_state_mutation_guards import require_idle
+    from hermes_state_runtime import mutate_runtime_session
+    seen = []
+
+    def admit(conn):
+        if authorize_write is not None:
+            authorize_write(conn)
+        require_idle(authority.db, conn, seen[0])
+        raise _Admitted
+
+    try:
+        mutate_runtime_session(authority.db, **{**fields, '_live_guard': lambda ids: seen.append(sorted(ids)),
+                                                '_authorize_write': admit})
+        return  # an exact retry: its receipt replays in phase 2
+    except _Admitted:
+        targets = seen[0]
+    key = _key(fields['principal_id'], fields['session_id'], fields['request_id'])
+    retire_foreign_routes(routing, targets, (key, targets))
     store.retire_runtime_sessions(targets)
 
 
@@ -98,3 +104,4 @@ def retire_routes_before_direct_delete(db, routing, session_id):
         if db._guarded_ids(conn, [*scope, *_collect_delegate_child_ids(conn, scope)]):
             return
     retire_foreign_routes(routing, scope)
+
