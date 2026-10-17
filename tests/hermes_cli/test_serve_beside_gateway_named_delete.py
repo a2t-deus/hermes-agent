@@ -28,11 +28,30 @@ pytestmark = pytest.mark.platforms('linux', 'macos')
 
 _PROFILE = 'r7p'
 # The chaos platform, plus one injected crash between the delete's phases: phase 1 has committed,
-# the fenced commit never runs (as if the owner died there), once per marked request.
-_PLUGIN = '''from tests.e2e.core.chaos._gateway_fake_platform import register as _register
+# the fenced commit never runs (as if the owner died there), once per marked request. While the
+# plugin dir holds ``_SWEEP_OFF``, a committed delete leaves the owner's routes naming it, durable and in
+# memory: what an owner restarted in the window between the commit and its route sweep holds.
+_SWEEP_OFF = 'sweep-off'
+_PLUGIN = '''from pathlib import Path
+
+from tests.e2e.core.chaos._gateway_fake_platform import register as _register
 import gateway.session_mutations as _mutations
+import gateway.session_routed_delete as _routed
+from gateway.session import SessionStore as _Store
 
 _real, _crashed = _mutations.mutate_runtime_session, set()
+_off = Path(__file__).with_name('sweep-off')
+_sweep, _forget = _routed.retire_routes_naming_deleted, _Store.retire_runtime_sessions
+
+
+def _sweep_unless_off(db, store):
+    if not _off.exists():
+        _sweep(db, store)
+
+
+def _forget_unless_off(store, session_ids):
+    if not _off.exists():
+        _forget(store, session_ids)
 
 
 def _crash_between_phases(db, **fields):
@@ -45,6 +64,8 @@ def _crash_between_phases(db, **fields):
 
 def register(ctx):
     _mutations.mutate_runtime_session = _crash_between_phases
+    _routed.retire_routes_naming_deleted = _sweep_unless_off
+    _Store.retire_runtime_sessions = _forget_unless_off
     _register(ctx)
 '''
 
@@ -226,6 +247,41 @@ def test_bulk_delete_leaves_no_route_naming_the_deleted_chat(named):
     assert (response.status_code, response.json().get('deleted')) == (200, 1), (response.text, be.logs(20))
     _gone(be, sid)
     assert _routed_chat(be, 'bulk') != sid, 'the chat goes on in a fresh session'
+
+
+def _log_ends(be):
+    return {path: path.stat().st_size for path in be.root.rglob('*.log')}
+
+
+def _logged_since(ends):
+    text = ''
+    for path in ends:
+        with open(path, encoding='utf-8', errors='replace') as log:
+            log.seek(ends[path])
+            text += log.read()
+    return text
+
+
+def test_a_stale_route_never_resurrects_the_deleted_chat(named):
+    """D29(b): with the sweep held off, a bulk delete leaves the chat's route naming the deleted id (durable
+    and live in the owner's memory). The chat's next native message still starts a fresh session; the
+    deleted row is never recreated."""
+    be, http = named
+    sid = _routed_chat(be, 'stale')
+    off = be.hermes_home / 'profiles' / _PROFILE / 'plugins' / fake_platform.PLUGIN_DIR_NAME / _SWEEP_OFF
+    ends = _log_ends(be)
+    off.touch()
+    try:
+        response = http.post('/api/sessions/bulk-delete', json={'ids': [sid], 'profile': _PROFILE})
+        assert (response.status_code, response.json().get('deleted')) == (200, 1), (response.text, be.logs(20))
+        assert not _row(be, sid) and _routes_naming(be, sid), 'the deleted chat keeps a stale route'
+        fresh = _routed_chat(be, 'stale')
+    finally:
+        off.unlink()
+    assert fresh != sid and not _row(be, sid), 'a fresh session; the deleted row stays absent'
+    assert _routes_naming(be, sid) == [], 'the fresh session replaced the stale route'
+    logged = _logged_since(ends)
+    assert 'IntegrityError' not in logged and 'FOREIGN KEY' not in logged, logged[-4000:]
 
 
 def test_delete_empty_leaves_no_route_naming_the_deleted_chat(named):
