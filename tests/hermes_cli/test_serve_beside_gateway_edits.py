@@ -8,6 +8,7 @@ maintenance refused" (MacBook rollout, 2026-10-17), then 403 once routed as the 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -288,8 +289,7 @@ def test_import_over_a_megabyte_runs_on_the_owner_from_a_bound_staged_file(topol
 
 
 def test_a_staged_payload_changed_after_its_ticket_is_refused_and_removed(topology):
-    be, http, _ = topology
-    import hashlib
+    be, _, _ = topology
     home = be.hermes_home.resolve()
     staging = home / 'runtime' / 'delegated-edit'
     staging.mkdir(mode=0o700, parents=True, exist_ok=True)

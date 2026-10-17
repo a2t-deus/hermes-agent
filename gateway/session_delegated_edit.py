@@ -90,7 +90,7 @@ def _read_staged(path: Path, digest: str):
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > _STAGED_MAX_BYTES
                 or (os.name != 'nt' and info.st_uid != os.getuid())):  # windows-footgun: ok — POSIX owner check
             return None
-        with os.fdopen(os.dup(fd), 'rb') as stream:
+        with os.fdopen(os.dup(fd), 'rb') as stream:  # windows-footgun: ok — binary mode
             raw = stream.read(_STAGED_MAX_BYTES + 1)
     finally:
         os.close(fd)
