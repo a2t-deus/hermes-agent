@@ -180,7 +180,7 @@ def _mutate_offline_store(profile, actor, params):
 
 
 _REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
-                   'invalid_params': 400, 'runtime_draining': 503}
+                   'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
 
 
 def _live_store_owner(profile):

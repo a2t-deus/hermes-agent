@@ -100,6 +100,10 @@ def retire_sessions(conn, session_ids):
     retire_routes(conn, session_ids)
     from hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
+    # A cold-history claim names a row, not a person: kept past the row, it made a later import of
+    # the id (once its tombstone expires) fail its own claim insert, every time.
+    from hermes_state_mutation_binding import BINDING_PREFIX
+    conn.executemany('DELETE FROM state_meta WHERE key=?', [(BINDING_PREFIX + sid,) for sid in session_ids])
 
 
 # Mutation-receipt fields that copy user content: the rewound message, a compaction summary and

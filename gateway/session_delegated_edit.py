@@ -25,6 +25,7 @@ from pathlib import Path
 import re
 import stat
 import secrets
+import sqlite3
 import threading
 import time
 import uuid
@@ -179,6 +180,10 @@ async def _mutate(authority, binding, mutation):
                                                                                  binding['session_id']), mutation)}
     except RuntimeStoreError as exc:
         return {'refused': exc.reason}
+    except sqlite3.Error:
+        # As the serve's own path answers it; raised through, the serve reads it as a drain.
+        logger.exception('delegated session edit: storage error')
+        return {'refused': 'storage_unavailable'}
     except MUTATION_GUARD_REFUSALS:
         return {'refused': 'session_busy'}
     except ValueError as exc:
