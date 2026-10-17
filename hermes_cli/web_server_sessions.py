@@ -238,9 +238,6 @@ def _mutate_through_owner(home, subject, params):
     A ticket bound to (profile, subject, session, operation) is minted and spent on the owner-only
     control socket (``gateway/session_delegated_edit.py``); the owner keeps every fence.
     """
-    from fastapi import HTTPException
-    from gateway.session_hosted_transport import owner_request
-
     binding = {'subject': subject, 'session_id': params['session_id'], 'operation': params['operation']}
     request, staged = {'mutation': params}, None
     if params['operation'] == 'import':
@@ -250,17 +247,52 @@ def _mutate_through_owner(home, subject, params):
         binding['payload_sha256'] = digest
         request = {'mutation': {k: v for k, v in params.items() if k != 'payload'}, 'staged': staged.name}
     try:
-        ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
-        answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, **request})
+        return _owner_exchange(home, binding, request)
     finally:
         if staged is not None:
             staged.unlink(missing_ok=True)
+
+
+def _owner_exchange(home, binding, request, *, timeout=30):
+    """Mint a ticket for *binding* and spend it on the owner's private socket; its result or the HTTP refusal."""
+    from fastapi import HTTPException
+    from gateway.session_hosted_transport import owner_request
+
+    ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
+    answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, **request}, timeout=timeout)
     if 'refused' not in answer:
         return answer['result']
     reason = answer['refused']
     if answer.get('errors'):
         raise HTTPException(status_code=400, detail={'errors': answer['errors']})
     raise HTTPException(status_code=_REFUSAL_STATUS.get(reason, 409), detail=answer.get('detail') or reason)
+
+
+async def bulk_through_owner(request, profile, operation, params):
+    """Fork (D19): a bulk session endpoint's result from the separate ready owner of this store, else None.
+
+    None (no composed authority, no ready owner) keeps the caller's offline path. The ticket binds this
+    request's principal and the exact parameters' sha256; the owner re-evaluates the selection itself.
+    """
+    from fastapi import HTTPException
+    from gateway.session_delegated_bulk import TIMEOUT_SECONDS
+    from gateway.session_delegated_edit import params_digest
+    from hermes_state_runtime import RuntimeStoreError
+
+    state = getattr(getattr(request, 'app', None), 'state', None)
+    # No request: a direct in-process call, never one a separate owner's serve received.
+    if (state is None or getattr(state, 'gateway_runner', None) is not None
+            or getattr(state, 'session_authority', None) is not None):
+        return None
+    owner = await asyncio.to_thread(_live_store_owner, profile)
+    if owner is None:
+        return None
+    _, actor = _session_mutation_context(request, profile)
+    binding = {'subject': actor.subject, 'operation': operation, 'params_sha256': params_digest(params)}
+    try:
+        return await asyncio.to_thread(_owner_exchange, owner, binding, {'params': params}, timeout=TIMEOUT_SECONDS)
+    except RuntimeStoreError as exc:
+        raise HTTPException(status_code=_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,

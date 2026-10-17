@@ -13,6 +13,9 @@ peer-verified owner-only control socket (same uid) reaches them, and no network 
 An import outgrows one control-socket line (64 KiB; real exports run to megabytes), so the serve stages its
 payload in a private file under the profile's ``runtime/delegated-edit/`` and the ticket binds its sha256;
 the owner reads it only through that binding and removes it.
+
+A bulk endpoint (``session_delegated_bulk``) binds no session: its ticket carries the sha256 of the exact
+parameters (sorted id set, or prune filters), and the owner runs only the parameters that hash to it.
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ TICKET_TTL_SECONDS = 30
 _MAX_TICKETS = 64
 _OPERATIONS = frozenset({'sidebar', 'delete', 'import'})
 _BINDING_KEYS = ('profile_id', 'subject', 'session_id', 'operation')
+_BULK_KEYS = ('profile_id', 'subject', 'operation', 'params_sha256')
 # The same grant the gateway-hosted REST routes give an authenticated HTTP principal.
 _CAPABILITIES = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
 _MUTATION_TIMEOUT = 25
@@ -69,7 +73,24 @@ class DelegatedEditTickets:
         return entry is not None and entry[0] > time.monotonic() and entry[1] == binding
 
 
+def params_digest(params) -> str:
+    """The sha256 a bulk ticket binds: canonical JSON, so both sides hash the same parameters."""
+    return hashlib.sha256(json.dumps(params, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _bulk_binding(params) -> dict:
+    from gateway.session_delegated_bulk import OPERATIONS
+    binding = {key: params.get(key) for key in _BULK_KEYS}
+    if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
+            or binding['operation'] not in OPERATIONS
+            or not re.fullmatch(r'[0-9a-f]{64}', binding['params_sha256'])):
+        raise PermissionError('invalid delegated edit binding')
+    return binding
+
+
 def _binding(params) -> dict:
+    if 'params_sha256' in params:
+        return _bulk_binding(params)
     keys = (*_BINDING_KEYS, 'payload_sha256') if 'payload_sha256' in params else _BINDING_KEYS
     binding = {key: params.get(key) for key in keys}
     if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
@@ -113,13 +134,15 @@ def install_delegated_edits(server, runner, loop):
         return authority
 
     def mint(params, peer):
-        if set(params) - {'payload_sha256'} != set(_BINDING_KEYS):
+        if set(params) - {'payload_sha256'} != set(_BINDING_KEYS) and set(params) != set(_BULK_KEYS):
             raise PermissionError('invalid delegated edit binding')
         binding = _binding(params)
         select(binding['profile_id'])
         return {'ticket': tickets.mint(binding), 'expires_in_seconds': TICKET_TTL_SECONDS}
 
     def edit(params, peer):
+        if 'params_sha256' in params:
+            return bulk(params)
         staged = 'payload_sha256' in params
         if (set(params) - {'payload_sha256', 'staged'} != {'ticket', 'mutation', *_BINDING_KEYS}
                 or staged != ('staged' in params)):
@@ -133,6 +156,15 @@ def install_delegated_edits(server, runner, loop):
         finally:
             if staged_path is not None:
                 staged_path.unlink(missing_ok=True)
+
+    def bulk(params):
+        if set(params) != {'ticket', 'params', *_BULK_KEYS}:
+            raise PermissionError('invalid delegated edit request')
+        binding = _bulk_binding(params)
+        if not tickets.consume(params['ticket'], binding) or params_digest(params['params']) != binding['params_sha256']:
+            return {'refused': 'permission_denied'}
+        from gateway.session_delegated_bulk import run_bulk
+        return run_bulk(select(binding['profile_id']), binding, params['params'], loop)
 
     def _edit(binding, params, staged_path):
         if not tickets.consume(params['ticket'], binding):
