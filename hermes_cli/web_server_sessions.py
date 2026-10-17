@@ -258,8 +258,10 @@ def _owner_exchange(home, binding, request, *, timeout=30):
     from fastapi import HTTPException
     from gateway.session_hosted_transport import owner_request
 
-    ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
-    answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, **request}, timeout=timeout)
+    answer = owner_request(home, 'delegated-edit-ticket', binding)
+    if 'refused' not in answer:
+        answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': answer['ticket'], **request},
+                               timeout=timeout)
     if 'refused' not in answer:
         return answer['result']
     reason = answer['refused']

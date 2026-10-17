@@ -33,6 +33,8 @@ import threading
 import time
 import uuid
 
+from hermes_state_runtime import RuntimeStoreError
+
 logger = logging.getLogger(__name__)
 
 TICKET_TTL_SECONDS = 30
@@ -40,6 +42,9 @@ _MAX_TICKETS = 64
 _OPERATIONS = frozenset({'sidebar', 'delete', 'import'})
 _BINDING_KEYS = ('profile_id', 'subject', 'session_id', 'operation')
 _BULK_KEYS = ('profile_id', 'subject', 'operation', 'params_sha256')
+_IMPORT_KEYS = ('payload_sha256',)
+# Refusals the serve maps to their own HTTP status (``_REFUSAL_STATUS``); any other PermissionError is a denial.
+_DENIALS = frozenset({'permission_denied', 'profile_mismatch'})
 # The same grant the gateway-hosted REST routes give an authenticated HTTP principal.
 _CAPABILITIES = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
 _MUTATION_TIMEOUT = 25
@@ -59,7 +64,7 @@ class DelegatedEditTickets:
             now = time.monotonic()
             self._entries = {k: v for k, v in self._entries.items() if v[0] > now}
             if len(self._entries) >= _MAX_TICKETS:
-                raise PermissionError('delegated edit capacity exhausted')
+                raise RuntimeStoreError('session_busy', detail='delegated edit capacity exhausted')
             ticket = secrets.token_urlsafe(32)
             self._entries[hashlib.sha256(ticket.encode()).hexdigest()] = (now + TICKET_TTL_SECONDS, binding)
             return ticket
@@ -84,20 +89,20 @@ def _bulk_binding(params) -> dict:
     if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
             or binding['operation'] not in OPERATIONS
             or not re.fullmatch(r'[0-9a-f]{64}', binding['params_sha256'])):
-        raise PermissionError('invalid delegated edit binding')
+        raise ValueError('invalid delegated edit binding')
     return binding
 
 
 def _binding(params) -> dict:
     if 'params_sha256' in params:
         return _bulk_binding(params)
-    keys = (*_BINDING_KEYS, 'payload_sha256') if 'payload_sha256' in params else _BINDING_KEYS
-    binding = {key: params.get(key) for key in keys}
+    binding = {key: params.get(key) for key in (*_BINDING_KEYS, *(k for k in _IMPORT_KEYS if k in params))}
+    digests = [binding[key] for key in _IMPORT_KEYS if key in binding]
     if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
             or binding['operation'] not in _OPERATIONS
-            or ('payload_sha256' in binding and (binding['operation'] != 'import'
-                                                 or not re.fullmatch(r'[0-9a-f]{64}', binding['payload_sha256'])))):
-        raise PermissionError('invalid delegated edit binding')
+            or ('payload_sha256' in binding and binding['operation'] != 'import')
+            or not all(re.fullmatch(r'[0-9a-f]{64}', digest) for digest in digests)):
+        raise ValueError('invalid delegated edit binding')
     return binding
 
 
@@ -121,6 +126,21 @@ def _read_staged(path: Path, digest: str):
     return json.loads(raw)
 
 
+def _answering_refusals(handler):
+    """An owner refusal reaches the serve as its own reason. Raised through, the serve sees only the socket's
+    error string, and ``owner_request`` reads any reason it does not list as a drain (503)."""
+    def answer(params, peer):
+        try:
+            return handler(params, peer)
+        except RuntimeStoreError as exc:
+            return {'refused': exc.reason, **({'detail': exc.detail} if exc.detail else {})}
+        except PermissionError as exc:
+            return {'refused': str(exc) if str(exc) in _DENIALS else 'permission_denied'}
+        except ValueError:
+            return {'refused': 'invalid_params'}
+    return answer
+
+
 def install_delegated_edits(server, runner, loop):
     from gateway.session_authorities import authority_for_home
 
@@ -134,8 +154,8 @@ def install_delegated_edits(server, runner, loop):
         return authority
 
     def mint(params, peer):
-        if set(params) - {'payload_sha256'} != set(_BINDING_KEYS) and set(params) != set(_BULK_KEYS):
-            raise PermissionError('invalid delegated edit binding')
+        if set(params) - set(_IMPORT_KEYS) != set(_BINDING_KEYS) and set(params) != set(_BULK_KEYS):
+            raise ValueError('invalid delegated edit binding')
         binding = _binding(params)
         select(binding['profile_id'])
         return {'ticket': tickets.mint(binding), 'expires_in_seconds': TICKET_TTL_SECONDS}
@@ -144,9 +164,9 @@ def install_delegated_edits(server, runner, loop):
         if 'params_sha256' in params:
             return bulk(params)
         staged = 'payload_sha256' in params
-        if (set(params) - {'payload_sha256', 'staged'} != {'ticket', 'mutation', *_BINDING_KEYS}
+        if (set(params) - {*_IMPORT_KEYS, 'staged'} != {'ticket', 'mutation', *_BINDING_KEYS}
                 or staged != ('staged' in params)):
-            raise PermissionError('invalid delegated edit request')
+            raise ValueError('invalid delegated edit request')
         binding = _binding(params)
         name = params.get('staged')
         staged_path = (Path(binding['profile_id']) / STAGING_DIR / name
@@ -159,7 +179,7 @@ def install_delegated_edits(server, runner, loop):
 
     def bulk(params):
         if set(params) != {'ticket', 'params', *_BULK_KEYS}:
-            raise PermissionError('invalid delegated edit request')
+            raise ValueError('invalid delegated edit request')
         binding = _bulk_binding(params)
         if not tickets.consume(params['ticket'], binding) or params_digest(params['params']) != binding['params_sha256']:
             return {'refused': 'permission_denied'}
@@ -190,7 +210,8 @@ def install_delegated_edits(server, runner, loop):
         future = asyncio.run_coroutine_threadsafe(_mutate(authority, binding, mutation), loop)
         return future.result(timeout=_MUTATION_TIMEOUT)
 
-    server.private_handlers.update({'delegated-edit-ticket': mint, 'delegated-edit': edit})
+    server.private_handlers.update({'delegated-edit-ticket': _answering_refusals(mint),
+                                    'delegated-edit': _answering_refusals(edit)})
 
 
 async def _mutate(authority, binding, mutation):
@@ -199,7 +220,6 @@ async def _mutate(authority, binding, mutation):
     from gateway.session_local_migration import bind_native_transport, unbind_native_transport
     from gateway.session_mutations import mutate_session
     from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_runtime import RuntimeStoreError
 
     actor = Principal(binding['subject'], authority.profile_id, _CAPABILITIES, 'delegated-http:' + uuid.uuid4().hex)
     # The serve's offline edit writes old unrouted local history as this principal; beside an owner it

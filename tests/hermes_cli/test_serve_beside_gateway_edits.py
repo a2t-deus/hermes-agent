@@ -306,3 +306,13 @@ def test_a_staged_payload_changed_after_its_ticket_is_refused_and_removed(topolo
     assert reply['result'] == {'refused': 'permission_denied'}, reply
     assert not staged.exists()
     assert _row(be, '_verify-tampered') is None
+
+
+def test_an_owner_refusal_keeps_its_status(topology):
+    """The owner refusing an edit is not a drain: an empty import is 400 here as on the serve's own path,
+    never 503 runtime_draining (F1 Verify r4: the owner's binding refusal surfaced as a drain)."""
+    _, http, _ = topology
+    response = http.post('/api/sessions/import', json={'request_id': 'i-empty', 'expected_revision': 0,
+                                                       'sessions': []})
+    assert (response.status_code, response.json()['detail']) == (400, 'invalid_params'), response.text
+
