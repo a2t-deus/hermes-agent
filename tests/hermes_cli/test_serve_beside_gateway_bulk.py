@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 
+from tests.e2e.core.terminal._gateway_client import poll_until
 from tests.hermes_cli.test_serve_beside_gateway_edits import (
     _USER, _generation, _private, _revision, _row, _serve_chat, pytestmark, run_topology)
 
@@ -96,6 +97,10 @@ def test_prune_runs_on_the_owner_with_its_own_selection(topology, which):
 def test_owner_backfill_runs_on_the_owner(topology, which):
     be, http, _ = topology
     key = _target(be, which, 'backfill')
+    if which == 'serve':
+        # The chat's auto-title lands after message.complete, and its upsert re-fills a NULL profile_name:
+        # nulled first, a slow run (a long lane) left the backfill nothing to stamp.
+        poll_until(lambda: _row(be, key)['title'] not in (None, 'hello'), timeout=30, interval=0.1, what='auto-title')
     _write(be, 'UPDATE sessions SET profile_name = NULL WHERE id = ?', (key,))
     response = http.post('/api/sessions/owner-backfill', json={})
     assert response.status_code == 200, (response.text, be.logs(20))
