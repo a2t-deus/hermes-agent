@@ -268,3 +268,41 @@ def test_expired_ticket_is_refused(topology):
         'operation': 'sidebar', 'payload': {'pinned': True}}})
     assert reply['result'] == {'refused': 'permission_denied'}, reply
     assert not _row(be, key)['pinned']
+
+
+def test_import_over_a_megabyte_runs_on_the_owner_from_a_bound_staged_file(topology):
+    """A real export outgrows one 64 KiB control-socket line (F5 rest_import: 400 invalid_params)."""
+    be, http, _ = topology
+    messages = [{'role': role, 'content': f'{role} {n} ' + 'x' * 400_000}
+                for n, role in enumerate(('user', 'assistant', 'user'))]
+    body = {'request_id': 'i-1', 'expected_revision': 0,
+            'sessions': [{'id': '_verify-imported', 'source': 'cli', 'messages': messages}]}
+    assert len(json.dumps(body)) > 1_000_000
+    response = http.post('/api/sessions/import', json=body)
+    assert response.status_code == 200, response.text
+    rows = be.db_rows('SELECT COUNT(*), SUM(LENGTH(content)) FROM messages WHERE session_id=?', ('_verify-imported',))
+    assert rows[0][0] == 3 and rows[0][1] > 1_200_000, rows
+    log = (be.hermes_home / 'logs' / 'agent.log').read_text(errors='replace')
+    assert 'operation=import session=_verify-imported' in log
+    assert not list((be.hermes_home / 'runtime' / 'delegated-edit').iterdir()), 'staged payload left behind'
+
+
+def test_a_staged_payload_changed_after_its_ticket_is_refused_and_removed(topology):
+    be, http, _ = topology
+    import hashlib
+    home = be.hermes_home.resolve()
+    staging = home / 'runtime' / 'delegated-edit'
+    staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {'sessions': [{'id': '_verify-tampered', 'source': 'cli', 'messages': [{'role': 'user', 'content': 'a'}]}]}
+    raw = json.dumps(payload).encode()
+    binding = {'profile_id': str(home), 'subject': 'basic:' + _USER, 'session_id': '_verify-tampered',
+               'operation': 'import', 'payload_sha256': hashlib.sha256(raw).hexdigest()}
+    ticket = _private(home, 'delegated-edit-ticket', binding)['result']['ticket']
+    staged = staging / ('t' * 43 + '.json')
+    staged.write_bytes(raw.replace(b'"a"', b'"b"'))
+    staged.chmod(0o600)
+    reply = _private(home, 'delegated-edit', {**binding, 'ticket': ticket, 'staged': staged.name, 'mutation': {
+        'session_id': '_verify-tampered', 'request_id': 'tam-1', 'expected_revision': 0, 'operation': 'import'}})
+    assert reply['result'] == {'refused': 'permission_denied'}, reply
+    assert not staged.exists()
+    assert _row(be, '_verify-tampered') is None

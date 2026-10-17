@@ -9,13 +9,21 @@ peer-verified owner-only control socket (same uid) reaches them, and no network 
   and operation.
 * ``delegated-edit`` consumes it and runs ``session.mutate`` on the owner's authority as that principal,
   every fence (revision, generation, idle, live-session gate) the owner's own.
+
+An import outgrows one control-socket line (64 KiB; real exports run to megabytes), so the serve stages its
+payload in a private file under the profile's ``runtime/delegated-edit/`` and the ticket binds its sha256;
+the owner reads it only through that binding and removes it.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 from pathlib import Path
+import re
+import stat
 import secrets
 import threading
 import time
@@ -30,6 +38,10 @@ _BINDING_KEYS = ('profile_id', 'subject', 'session_id', 'operation')
 # The same grant the gateway-hosted REST routes give an authenticated HTTP principal.
 _CAPABILITIES = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
 _MUTATION_TIMEOUT = 25
+STAGING_DIR = Path('runtime') / 'delegated-edit'
+_STAGED_NAME = re.compile(r'[A-Za-z0-9_-]{32,64}\.json')
+# Twice the serve's import body cap (``_SESSION_IMPORT_MAX_BYTES``): re-encoding never grows it further.
+_STAGED_MAX_BYTES = 50 * 1024 * 1024
 
 
 class DelegatedEditTickets:
@@ -57,11 +69,34 @@ class DelegatedEditTickets:
 
 
 def _binding(params) -> dict:
-    binding = {key: params.get(key) for key in _BINDING_KEYS}
+    keys = (*_BINDING_KEYS, 'payload_sha256') if 'payload_sha256' in params else _BINDING_KEYS
+    binding = {key: params.get(key) for key in keys}
     if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
-            or binding['operation'] not in _OPERATIONS):
+            or binding['operation'] not in _OPERATIONS
+            or ('payload_sha256' in binding and (binding['operation'] != 'import'
+                                                 or not re.fullmatch(r'[0-9a-f]{64}', binding['payload_sha256'])))):
         raise PermissionError('invalid delegated edit binding')
     return binding
+
+
+def _read_staged(path: Path, digest: str):
+    """The staged payload, only when it is this user's single-link regular file with the bound digest."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > _STAGED_MAX_BYTES
+                or (os.name != 'nt' and info.st_uid != os.getuid())):  # windows-footgun: ok — POSIX owner check
+            return None
+        with os.fdopen(os.dup(fd), 'rb') as stream:
+            raw = stream.read(_STAGED_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    if hashlib.sha256(raw).hexdigest() != digest:
+        return None
+    return json.loads(raw)
 
 
 def install_delegated_edits(server, runner, loop):
@@ -77,30 +112,48 @@ def install_delegated_edits(server, runner, loop):
         return authority
 
     def mint(params, peer):
-        if set(params) != set(_BINDING_KEYS):
+        if set(params) - {'payload_sha256'} != set(_BINDING_KEYS):
             raise PermissionError('invalid delegated edit binding')
         binding = _binding(params)
         select(binding['profile_id'])
         return {'ticket': tickets.mint(binding), 'expires_in_seconds': TICKET_TTL_SECONDS}
 
     def edit(params, peer):
-        if set(params) != {'ticket', 'mutation', *_BINDING_KEYS}:
+        staged = 'payload_sha256' in params
+        if (set(params) - {'payload_sha256', 'staged'} != {'ticket', 'mutation', *_BINDING_KEYS}
+                or staged != ('staged' in params)):
             raise PermissionError('invalid delegated edit request')
         binding = _binding(params)
+        name = params.get('staged')
+        staged_path = (Path(binding['profile_id']) / STAGING_DIR / name
+                       if staged and isinstance(name, str) and _STAGED_NAME.fullmatch(name) else None)
+        try:
+            return _edit(binding, params, staged_path)
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
+
+    def _edit(binding, params, staged_path):
         if not tickets.consume(params['ticket'], binding):
             return {'refused': 'permission_denied'}
         mutation = params['mutation']
+        staged = 'payload_sha256' in binding
         if (not isinstance(mutation, dict) or mutation.get('session_id') != binding['session_id']
-                or mutation.get('operation') != binding['operation']):
+                or mutation.get('operation') != binding['operation'] or staged == ('payload' in mutation)):
             return {'refused': 'invalid_params'}
         authority = select(binding['profile_id'])
+        logger.info('delegated session edit: principal=%s operation=%s session=%s profile=%s',
+                    binding['subject'], binding['operation'], binding['session_id'], binding['profile_id'])
+        if staged:
+            payload = _read_staged(staged_path, binding['payload_sha256']) if staged_path is not None else None
+            if payload is None:
+                return {'refused': 'permission_denied'}
+            mutation = {**mutation, 'payload': payload}
         if binding['operation'] == 'import':
             payload = mutation.get('payload') if isinstance(mutation.get('payload'), dict) else {}
             _, errors = authority.db._validate_import_payload(payload.get('sessions'))
             if errors:
                 return {'refused': 'invalid_params', 'errors': errors}
-        logger.info('delegated session edit: principal=%s operation=%s session=%s profile=%s',
-                    binding['subject'], binding['operation'], binding['session_id'], binding['profile_id'])
         future = asyncio.run_coroutine_threadsafe(_mutate(authority, binding, mutation), loop)
         return future.result(timeout=_MUTATION_TIMEOUT)
 

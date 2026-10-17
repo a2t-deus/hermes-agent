@@ -214,6 +214,24 @@ def _row_owner_subject(request, profile, session_id, actor):
     return stamp if row is not None and row.get('user_id') == stamp else actor.subject
 
 
+def _stage_payload(home, payload):
+    """``(path, sha256)`` of *payload* written 0600 to a fresh name under the profile's staging dir."""
+    import hashlib
+    import json
+    import os
+    import secrets
+    from gateway.session_delegated_edit import STAGING_DIR
+
+    raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    directory = home / STAGING_DIR
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / f'{secrets.token_urlsafe(32)}.json'
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(raw)
+    return path, hashlib.sha256(raw).hexdigest()
+
+
 def _mutate_through_owner(home, subject, params):
     """Fork (D19): the edit runs on the owner as this request's principal, over its private socket.
 
@@ -224,8 +242,19 @@ def _mutate_through_owner(home, subject, params):
     from gateway.session_hosted_transport import owner_request
 
     binding = {'subject': subject, 'session_id': params['session_id'], 'operation': params['operation']}
-    ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
-    answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, 'mutation': params})
+    request, staged = {'mutation': params}, None
+    if params['operation'] == 'import':
+        # A real export outgrows one control-socket line: the owner reads it from a private file the
+        # ticket binds by digest, and removes it.
+        staged, digest = _stage_payload(home, params['payload'])
+        binding['payload_sha256'] = digest
+        request = {'mutation': {k: v for k, v in params.items() if k != 'payload'}, 'staged': staged.name}
+    try:
+        ticket = owner_request(home, 'delegated-edit-ticket', binding)['ticket']
+        answer = owner_request(home, 'delegated-edit', {**binding, 'ticket': ticket, **request})
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
     if 'refused' not in answer:
         return answer['result']
     reason = answer['refused']
