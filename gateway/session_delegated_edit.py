@@ -12,7 +12,8 @@ peer-verified owner-only control socket (same uid) reaches them, and no network 
 
 An import outgrows one control-socket line (64 KiB; real exports run to megabytes), so the serve stages its
 payload in a private file under the profile's ``runtime/delegated-edit/`` and the ticket binds its sha256;
-the owner reads it only through that binding and removes it.
+the owner reads it only through that binding and removes it. An import's ticket also binds the sha256 of
+its sorted session ids, so it covers exactly the sessions imported, not only the anchor it names.
 
 A bulk endpoint (``session_delegated_bulk``) binds no session: its ticket carries the sha256 of the exact
 parameters (sorted id set, or prune filters), and the owner runs only the parameters that hash to it.
@@ -42,7 +43,7 @@ _MAX_TICKETS = 64
 _OPERATIONS = frozenset({'sidebar', 'delete', 'import'})
 _BINDING_KEYS = ('profile_id', 'subject', 'session_id', 'operation')
 _BULK_KEYS = ('profile_id', 'subject', 'operation', 'params_sha256')
-_IMPORT_KEYS = ('payload_sha256',)
+_IMPORT_KEYS = ('payload_sha256', 'session_ids_sha256')
 # Refusals the serve maps to their own HTTP status (``_REFUSAL_STATUS``); any other PermissionError is a denial.
 _DENIALS = frozenset({'permission_denied', 'profile_mismatch'})
 # The same grant the gateway-hosted REST routes give an authenticated HTTP principal.
@@ -83,6 +84,13 @@ def params_digest(params) -> str:
     return hashlib.sha256(json.dumps(params, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def import_ids_digest(sessions) -> str:
+    """The sha256 an import ticket binds: the payload's sorted session ids, as the import validator reads them."""
+    sessions = sessions if isinstance(sessions, list) else []
+    return params_digest(sorted(str(item.get('id') or '').strip() if isinstance(item, dict) else ''
+                                for item in sessions))
+
+
 def _bulk_binding(params) -> dict:
     from gateway.session_delegated_bulk import OPERATIONS
     binding = {key: params.get(key) for key in _BULK_KEYS}
@@ -100,6 +108,7 @@ def _binding(params) -> dict:
     digests = [binding[key] for key in _IMPORT_KEYS if key in binding]
     if (not all(isinstance(value, str) and value and len(value) <= 512 for value in binding.values())
             or binding['operation'] not in _OPERATIONS
+            or (binding['operation'] == 'import') != ('session_ids_sha256' in binding)
             or ('payload_sha256' in binding and binding['operation'] != 'import')
             or not all(re.fullmatch(r'[0-9a-f]{64}', digest) for digest in digests)):
         raise ValueError('invalid delegated edit binding')
@@ -195,8 +204,9 @@ def install_delegated_edits(server, runner, loop):
                 or mutation.get('operation') != binding['operation'] or staged == ('payload' in mutation)):
             return {'refused': 'invalid_params'}
         authority = select(binding['profile_id'])
-        logger.info('delegated session edit: principal=%s operation=%s session=%s profile=%s',
-                    binding['subject'], binding['operation'], binding['session_id'], binding['profile_id'])
+        logger.info('delegated session edit: principal=%s operation=%s session=%s profile=%s ids_sha256=%s',
+                    binding['subject'], binding['operation'], binding['session_id'], binding['profile_id'],
+                    binding.get('session_ids_sha256', '-')[:16])
         if staged:
             payload = _read_staged(staged_path, binding['payload_sha256']) if staged_path is not None else None
             if payload is None:
@@ -204,6 +214,8 @@ def install_delegated_edits(server, runner, loop):
             mutation = {**mutation, 'payload': payload}
         if binding['operation'] == 'import':
             payload = mutation.get('payload') if isinstance(mutation.get('payload'), dict) else {}
+            if import_ids_digest(payload.get('sessions')) != binding['session_ids_sha256']:
+                return {'refused': 'permission_denied'}
             _, errors = authority.db._validate_import_payload(payload.get('sessions'))
             if errors:
                 return {'refused': 'invalid_params', 'errors': errors}

@@ -236,8 +236,11 @@ def _mutate_through_owner(home, subject, params):
     """Fork (D19): the edit runs on the owner as this request's principal, over its private socket.
 
     A ticket bound to (profile, subject, session, operation) is minted and spent on the owner-only
-    control socket (``gateway/session_delegated_edit.py``); the owner keeps every fence.
+    control socket (``gateway/session_delegated_edit.py``); the owner keeps every fence. An import's
+    ticket also binds its payload's digest and every session id it imports.
     """
+    from gateway.session_delegated_edit import import_ids_digest
+
     binding = {'subject': subject, 'session_id': params['session_id'], 'operation': params['operation']}
     request, staged = {'mutation': params}, None
     if params['operation'] == 'import':
@@ -245,6 +248,7 @@ def _mutate_through_owner(home, subject, params):
         # ticket binds by digest, and removes it.
         staged, digest = _stage_payload(home, params['payload'])
         binding['payload_sha256'] = digest
+        binding['session_ids_sha256'] = import_ids_digest(params['payload']['sessions'])
         request = {'mutation': {k: v for k, v in params.items() if k != 'payload'}, 'staged': staged.name}
     try:
         return _owner_exchange(home, binding, request)

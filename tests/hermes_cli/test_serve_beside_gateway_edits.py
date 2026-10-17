@@ -22,6 +22,7 @@ import pytest
 
 import tests.e2e.core.terminal._gateway_client as gateway_client
 from tests.e2e.core.terminal._gateway_client import REPO_ROOT, Backend, WSClient, _minimal_env, etype, poll_until
+from gateway.session_delegated_edit import import_ids_digest
 from tests.fakes.fake_llm_provider import Hang, Text, ToolCall, write_hermes_home
 
 pytestmark = pytest.mark.platforms('linux', 'macos')
@@ -305,7 +306,8 @@ def test_a_staged_payload_changed_after_its_ticket_is_refused_and_removed(topolo
     payload = {'sessions': [{'id': '_verify-tampered', 'source': 'cli', 'messages': [{'role': 'user', 'content': 'a'}]}]}
     raw = json.dumps(payload).encode()
     binding = {'profile_id': str(home), 'subject': 'basic:' + _USER, 'session_id': '_verify-tampered',
-               'operation': 'import', 'payload_sha256': hashlib.sha256(raw).hexdigest()}
+               'operation': 'import', 'payload_sha256': hashlib.sha256(raw).hexdigest(),
+               'session_ids_sha256': import_ids_digest(payload['sessions'])}
     ticket = _private(home, 'delegated-edit-ticket', binding)['result']['ticket']
     staged = staging / ('t' * 43 + '.json')
     staged.write_bytes(raw.replace(b'"a"', b'"b"'))
@@ -325,3 +327,35 @@ def test_an_owner_refusal_keeps_its_status(topology):
                                                        'sessions': []})
     assert (response.status_code, response.json()['detail']) == (400, 'invalid_params'), response.text
 
+
+def test_an_import_ticket_covers_exactly_the_sessions_imported(topology):
+    be, http, _ = topology
+    sessions = [{'id': f'_verify-many-{n}', 'source': 'cli', 'messages': [{'role': 'user', 'content': str(n)}]}
+                for n in (2, 1)]
+    response = http.post('/api/sessions/import', json={'request_id': 'i-many', 'expected_revision': 0,
+                                                       'sessions': sessions})
+    assert response.status_code == 200 and response.json()['imported'] == 2, response.text
+    log = (be.hermes_home / 'logs' / 'agent.log').read_text(errors='replace')
+    assert 'session=_verify-many-2 ' in log and f'ids_sha256={import_ids_digest(sessions)[:16]}' in log
+
+    # A ticket naming only the anchor never carries a second session in its (digest-bound) payload.
+    home = be.hermes_home.resolve()
+    staging = home / 'runtime' / 'delegated-edit'
+    staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+    smuggled = [{'id': '_verify-anchor', 'source': 'cli', 'messages': [{'role': 'user', 'content': 'a'}]},
+                {'id': '_verify-smuggled', 'source': 'cli', 'messages': [{'role': 'user', 'content': 'b'}]}]
+    raw = json.dumps({'sessions': smuggled}).encode()
+    binding = {'profile_id': str(home), 'subject': 'basic:' + _USER, 'session_id': '_verify-anchor',
+               'operation': 'import', 'payload_sha256': hashlib.sha256(raw).hexdigest(),
+               'session_ids_sha256': import_ids_digest(smuggled[:1])}
+    ticket = _private(home, 'delegated-edit-ticket', binding)['result']['ticket']
+    staged = staging / ('s' * 43 + '.json')
+    staged.write_bytes(raw)
+    staged.chmod(0o600)
+    reply = _private(home, 'delegated-edit', {**binding, 'ticket': ticket, 'staged': staged.name, 'mutation': {
+        'session_id': '_verify-anchor', 'request_id': 'sm-1', 'expected_revision': 0, 'operation': 'import'}})
+    assert reply['result'] == {'refused': 'permission_denied'}, reply
+    assert _row(be, '_verify-anchor') is None and _row(be, '_verify-smuggled') is None
+    # An import ticket that binds no id set is refused when minted, as the client's error it is.
+    reply = _private(home, 'delegated-edit-ticket', {k: v for k, v in binding.items() if k != 'session_ids_sha256'})
+    assert reply['result'] == {'refused': 'invalid_params'}, reply
