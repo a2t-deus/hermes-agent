@@ -162,7 +162,9 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             store = getattr(authority.runner, 'session_store', None)
             if store is not None and (store._routing_db is None
                     or store._routing_db.db_path != authority.db.db_path):
-                raise RuntimeStoreError('runtime_coordination_required')
+                from gateway.session_routed_delete import admits_delete  # fork (D27)
+                if not admits_delete(authority, principal_id, ref.session_id, params['request_id'], targets):
+                    raise RuntimeStoreError('runtime_coordination_required')
         if operation in {'rewind', 'reset'} and not callable(getattr(authority.runner, '_evict_cached_agent', None)):
             raise RuntimeStoreError('runtime_coordination_required')
 
@@ -195,6 +197,9 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
                 # guarded model target awaits the user's confirmation: no receipt, no publication,
                 # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
+    if operation == 'delete':
+        from gateway.session_routed_delete import retire_routes_first  # fork (D27): phase 1, another store
+        await asyncio.to_thread(retire_routes_first, authority, principal_id, params)
     applied = False
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:

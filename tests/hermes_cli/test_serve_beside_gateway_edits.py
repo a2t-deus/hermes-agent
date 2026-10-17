@@ -64,15 +64,18 @@ def _private(home, verb, params):
             return json.loads(stream.readline())
 
 
-def run_topology(tmp_path_factory):
-    """Gateway first, then the serve, as launchd starts them on a host; yields (backend, http, identify)."""
+def run_topology(tmp_path_factory, prepare=None, gateway_env=None):
+    """Gateway first, then the serve, as launchd starts them on a host; yields (backend, http, identify).
+    *prepare(be)* runs before the gateway starts (profile homes, plugins); *gateway_env* joins its env."""
     be = Backend(tmp_path_factory.mktemp('beside'), _responder, extra_config=_CONFIG, env=_BASIC)
     be.llm.start()
     write_hermes_home(be.hermes_home, be.llm.base_url, extra_config=_CONFIG)
     be.hermes_home.chmod(0o700)
+    if prepare is not None:
+        prepare(be)
     log = open(be.root / 'gateway.log', 'w+')
     gateway = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=REPO_ROOT,
-                               env=_minimal_env(be.home, be.hermes_home, be.token, _BASIC),
+                               env=_minimal_env(be.home, be.hermes_home, be.token, {**_BASIC, **(gateway_env or {})}),
                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
     def ready():
