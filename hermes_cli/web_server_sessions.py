@@ -179,6 +179,44 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
+_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
+                   'invalid_params': 400, 'runtime_draining': 503}
+
+
+def _live_store_owner(profile):
+    """``(home, endpoint)`` of the ready gateway serving this standalone serve's store, else None.
+
+    The host's gateway is a separate process here; its held lock is what the offline path's
+    exclusive maintenance refuses, so its edits belong to that owner. Discovery only, never a start.
+    """
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_state import _default_db_path
+
+    home = (Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent).resolve()
+    found = discover_gateway_endpoint(home)
+    return (home, found.endpoint) if found.state == 'ready' and found.endpoint is not None else None
+
+
+async def _mutate_through_owner(home, endpoint, params):
+    """One ``session.mutate`` on the owner, as ``hermes sessions prune`` sends ``session.prune``."""
+    from fastapi import HTTPException
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # The ticket is minted for this profile's home, not the serve's launch profile.
+    token = set_hermes_home_override(home)
+    try:
+        async with connect_gateway(endpoint) as client:
+            return await client.rpc('session.mutate', **params)
+    except GatewayRPCError as exc:
+        raise HTTPException(status_code=_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
+    except GatewayClientError as exc:
+        raise HTTPException(status_code=503, detail='session_owner_unavailable') from exc
+    finally:
+        reset_hermes_home_override(token)
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -201,16 +239,16 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     if expected_generation is not None:
         params['expected_generation'] = expected_generation
     try:
-        if authority is None:
+        if authority is None and (owner := await asyncio.to_thread(_live_store_owner, profile)) is not None:
+            result = await _mutate_through_owner(*owner, params)
+        elif authority is None:
             result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
-        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
-                  'invalid_params': 400, 'runtime_draining': 503}.get(exc.reason, 409)
-        raise HTTPException(status_code=status, detail=exc.reason) from exc
+        raise HTTPException(status_code=_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:
