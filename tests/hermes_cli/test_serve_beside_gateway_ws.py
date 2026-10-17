@@ -9,8 +9,15 @@ import os
 import re
 import signal
 
+import pytest
+
 from tests.e2e.core.terminal._gateway_client import etype, poll_until
-from tests.hermes_cli.test_serve_beside_gateway_edits import _row, _serve_chat, pytestmark, topology  # noqa: F401
+from tests.hermes_cli.test_serve_beside_gateway_edits import _row, _serve_chat, pytestmark, run_topology
+
+
+@pytest.fixture(scope='module')
+def topology(tmp_path_factory):
+    yield from run_topology(tmp_path_factory)
 
 
 def _complete(ws, sid, start):
@@ -80,7 +87,7 @@ def test_settle_rpc_settles_and_cancels_the_open_clarify(topology):
 def test_sigterm_closes_with_1012_and_books_the_cut_turn_to_serve_shutdown(topology):
     """Last: it stops the serve."""
     be, _, _ = topology
-    a, sid, _, start = _serve_chat(be, 'drain', 'HANG here')
+    a, _, _, _ = _serve_chat(be, 'drain', 'HANG here')
     poll_until(lambda: any('HANG here' in str(body.get('messages')) for body in be.llm.main_requests()) or None,
                timeout=60, what='the turn is waiting on the provider')
     os.killpg(be.proc.pid, signal.SIGTERM)

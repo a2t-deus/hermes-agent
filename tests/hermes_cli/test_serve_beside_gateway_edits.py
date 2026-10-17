@@ -62,8 +62,8 @@ def _private(home, verb, params):
             return json.loads(stream.readline())
 
 
-@pytest.fixture(scope='module')
-def topology(tmp_path_factory):
+def run_topology(tmp_path_factory):
+    """Gateway first, then the serve, as launchd starts them on a host; yields (backend, http, identify)."""
     be = Backend(tmp_path_factory.mktemp('beside'), _responder, extra_config=_CONFIG, env=_BASIC)
     be.llm.start()
     write_hermes_home(be.hermes_home, be.llm.base_url, extra_config=_CONFIG)
@@ -106,6 +106,11 @@ def topology(tmp_path_factory):
                 os.killpg(gateway.pid, signal.SIGKILL)
                 gateway.wait(timeout=5)
         log.close()
+
+
+@pytest.fixture(scope='module')
+def topology(tmp_path_factory):
+    yield from run_topology(tmp_path_factory)
 
 
 def _connect(be, http, name):
@@ -257,7 +262,7 @@ def test_expired_ticket_is_refused(topology):
     home = be.hermes_home.resolve()
     binding = {'profile_id': str(home), 'subject': _row(be, key)['user_id'], 'session_id': key, 'operation': 'sidebar'}
     ticket = _private(home, 'delegated-edit-ticket', binding)['result']['ticket']
-    time.sleep(31)
+    time.sleep(31)  # health: allow HX013 -- the 30 s ticket TTL running out is the behaviour under test
     reply = _private(home, 'delegated-edit', {**binding, 'ticket': ticket, 'mutation': {
         'session_id': key, 'request_id': 'e-1', 'expected_revision': _revision(http, key),
         'operation': 'sidebar', 'payload': {'pinned': True}}})
